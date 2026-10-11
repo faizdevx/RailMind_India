@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RailMind India - Control Room</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="{{ url_for('plotly_js') }}"></script>
+</head>
+<body>
+<header>
+  <h1>RAILMIND INDIA <span>digital twin &amp; dispatch research</span></h1>
+  <div id="health" class="pill">checking backend...</div>
+</header>
+<div class="banner">Research prototype. Simulation output is <b>SIMULATED / PREDICTED</b>, never railway control, and never proof of real-world punctuality improvement.</div>
+<main>
+  <section class="panel" id="left">
+    <h2>REAL INDIAN RAILWAYS RIGHT NOW</h2>
+    <p class="sub">Observed data only, from the configured provider. Nothing here is simulated.</p>
+    <form id="searchForm">
+      <input id="trainNo" inputmode="numeric" maxlength="5" placeholder="5-digit train number, e.g. 12301" aria-label="Train number">
+      <button type="submit">Search / fetch</button>
+    </form>
+    <div id="providerBox" class="box"></div>
+    <div id="trains"></div>
+  </section>
+
+  <section class="panel" id="right">
+    <h2>COUNTERFACTUAL SIMULATION <span class="tag sim">SIMULATED</span></h2>
+    <p class="sub">Separate what-if model of a short single-track corridor. Not the real network. Cannot send commands to railway infrastructure.</p>
+    <div class="controls">
+      <label>Seed <input id="seed" type="number" value="7" min="0" max="999999"></label>
+      <label>Traffic load <input id="load" type="number" step="0.25" value="1" min="0.25" max="2"></label>
+      <label>Extra delay (min) <input id="extra" type="number" value="0" min="0" max="120"></label>
+      <label>Runs (uncertainty) <input id="runs" type="number" value="20" min="1" max="50"></label>
+    </div>
+    <div class="controls">
+      <button id="simSel">Simulate selected train</button>
+      <button id="simSyn" class="alt">Run SYNTHETIC demo</button>
+    </div>
+    <div id="simMeta" class="box hidden"></div>
+    <div class="controls" id="player">
+      <button id="play">Play</button><button id="pause">Pause</button><button id="reset">Reset</button>
+      <label>Speed <select id="speed"><option>1</option><option selected>4</option><option>8</option><option>16</option></select>x</label>
+      <span id="clock" class="pill">t = 0 min</span>
+    </div>
+    <div class="grid2">
+      <div><h3>Baseline: first-come-first-served <span class="tag sim">SIMULATED</span></h3><div id="plotBase" class="plot"></div></div>
+      <div><h3 id="rlTitle">RL-proposed (PPO) <span class="tag sim">SIMULATED</span></h3><div id="plotRL" class="plot"></div></div>
+    </div>
+    <h3>Comparison <span class="tag pred">PREDICTED</span></h3>
+    <div id="compare"></div>
+    <h3>Bottleneck, interventions &amp; explanations</h3>
+    <div id="explain"></div>
+    <h3>Events up to cursor <span class="tag sim">SIMULATED</span></h3>
+    <div id="events" class="events"></div>
+    <h3>Assumptions</h3>
+    <ul id="assumptions"></ul>
+  </section>
+</main>
+<footer>RailMind India - PPO trained on labelled synthetic scenarios only; not validated against real railway operations.</footer>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

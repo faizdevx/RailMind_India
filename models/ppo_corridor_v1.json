@@ -1,0 +1,36 @@
+{
+  "model_version": "ppo_corridor_v1",
+  "trained_utc": "2026-10-11T19:58:09.753805+00:00",
+  "config": {
+    "algo": "PPO",
+    "policy": "MlpPolicy",
+    "learning_rate": 5e-05,
+    "n_steps": 4096,
+    "batch_size": 256,
+    "gamma": 1.0,
+    "ent_coef": 0.0,
+    "net_arch": [
+      128,
+      128
+    ],
+    "total_timesteps": 400000,
+    "seed": 0,
+    "warm_start": "behaviour cloning of FCFS rule",
+    "bc_episodes": 300,
+    "model_selection": "best of BC-only / PPO-final on validation seeds 50000+"
+  },
+  "bc": {
+    "bc_samples": 53919,
+    "bc_episodes": 300,
+    "bc_final_loss": 0.020316636189818382
+  },
+  "validation_weighted_delay": {
+    "bc_only": 299.86,
+    "ppo_finetuned": 293.61
+  },
+  "selected_checkpoint": "ppo_finetuned",
+  "train_seconds": 316.4,
+  "stable_baselines3": "2.9.0",
+  "data": "SYNTHETIC DATA - NOT REAL INDIAN RAILWAYS DATA",
+  "validated_against_real_operations": false
+}

@@ -1,0 +1,14 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/*.log
+models/*.err
+models/*.tmp
+*.key
+*.pem
+app.log
+app.err
+models/_bc_tmp.zip
