@@ -8,16 +8,12 @@ from flask import Flask, jsonify, render_template, request
 
 from railmind.config import Config
 from railmind.providers.base import ProviderUnavailable, build_provider, valid_train_no
-from railmind.services import Jobs, SimStore, StatusService, get_model, model_info, simulate
+from railmind.providers.replay import ReplayProvider
+from railmind.services import (Jobs, SimStore, StatusService, analyze_status, get_knowledge, get_model,
+                               model_info)
 from railmind.sim.corridor import SYNTHETIC_LABEL
 
 log = logging.getLogger("railmind")
-
-SYNTHETIC_STATUS = {
-    "train_no": "SYNTH", "provider": "SYNTHETIC (development only)",
-    "retrieved_utc": None, "train_name": "Synthetic Express", "current_station": None,
-    "delay_min": 15, "stops": [], "missing_fields": [], "label": SYNTHETIC_LABEL}
-
 
 def create_app(provider=None) -> Flask:
     logging.basicConfig(level=Config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -25,6 +21,7 @@ def create_app(provider=None) -> Flask:
     prov = provider or build_provider()
     status_svc = StatusService(prov)
     sims, jobs = SimStore(), Jobs()
+    replay = ReplayProvider()
 
     def err(msg, status=400, **kw):
         return jsonify({"error": msg, **kw}), status
@@ -44,7 +41,9 @@ def create_app(provider=None) -> Flask:
     @app.get("/api/health")
     def health():
         return jsonify({"ok": True, "time_utc": datetime.now(timezone.utc).isoformat(),
-                        "provider": prov.describe(), "model": model_info(),
+                        "provider": prov.describe(), "model": {k: v for k, v in model_info().items() if k in ("trained", "model_version", "selected_checkpoint", "trained_utc")},
+                        "knowledge": (lambda k: k.describe() if k else None)(get_knowledge()),
+                        "replay": replay.describe(),
                         "rate_limit": getattr(getattr(prov, "limiter", None), "usage", lambda: None)()})
 
     @app.get("/api/trains/search")
@@ -74,36 +73,66 @@ def create_app(provider=None) -> Flask:
         except ProviderUnavailable as e:
             return err(e.reason, e.http, code=e.code, provider=prov.describe())
 
-    @app.post("/api/simulations")
-    def start_sim():
+    def _status_for(body):
+        """Resolve a status snapshot: live provider, or recorded replay (clearly labelled)."""
+        tn = str(body.get("train_no", ""))
+        if not valid_train_no(tn):
+            raise ValueError("train_no must be exactly 5 digits.")
+        if body.get("source") == "replay":
+            try:
+                at = float(body.get("at", 0.4))
+            except (TypeError, ValueError):
+                raise ValueError("at must be a number between 0.1 and 0.9.")
+            if not 0.1 <= at <= 0.9:
+                raise ValueError("at must be between 0.1 and 0.9.")
+            return replay.fetch(tn, at=at).as_dict(), True
+        return status_svc.get(tn)["status"], False
+
+    @app.get("/api/replay/trains")
+    def replay_trains():
+        try:
+            return jsonify({"label": "HISTORICAL REPLAY - NOT LIVE", "trains": replay.list_trains(40)})
+        except ProviderUnavailable as e:
+            return err(e.reason, e.http, code=e.code)
+
+    @app.post("/api/analysis")
+    def analysis():
         body = request.get_json(silent=True) or {}
         try:
-            seed = int(body.get("seed", 7))
-            load = float(body.get("load", 1.0))
+            mc = int(body.get("mc_runs", 15))
             extra = int(body.get("extra_delay", 0))
-            runs = int(body.get("uncertainty_runs", 20))
+            seed = int(body.get("seed", 0))
+            single = bool(body.get("single_line", False))
         except (TypeError, ValueError):
-            return err("seed/load/extra_delay/uncertainty_runs must be numeric.")
-        if not (0.25 <= load <= 2.0 and 0 <= extra <= 120 and 1 <= runs <= 50 and 0 <= seed < 10**6):
-            return err("Parameter out of range: load 0.25-2, extra_delay 0-120, uncertainty_runs 1-50.")
-        if body.get("mode") == "synthetic":
-            snap = dict(SYNTHETIC_STATUS, retrieved_utc=datetime.now(timezone.utc).isoformat())
-        else:
-            tn = str(body.get("train_no", ""))
-            if not valid_train_no(tn):
-                return err("train_no must be exactly 5 digits (or mode='synthetic').")
-            try:
-                snap = status_svc.get(tn)["status"]
-            except ProviderUnavailable as e:
-                return err("No verified snapshot: " + e.reason, e.http, code=e.code)
-        sim = simulate(snap, seed=seed, load=load, extra_delay=extra, n_runs=runs)
-        sims.put(sim)
-        return jsonify(sim), 201
+            return err("mc_runs/extra_delay/seed must be numeric.")
+        if not (1 <= mc <= 60 and 0 <= extra <= 180 and 0 <= seed < 10**6):
+            return err("Parameter out of range: mc_runs 1-60, extra_delay 0-180.")
+        try:
+            snap, is_replay = _status_for(body)
+        except ValueError as e:
+            return err(str(e))
+        except ProviderUnavailable as e:
+            return err("No verified snapshot: " + e.reason, e.http, code=e.code)
+        try:
+            out = analyze_status(snap, n_mc=mc, single_line=single, extra_delay=extra, seed=seed)
+        except ProviderUnavailable as e:
+            return err(e.reason, e.http, code=e.code)
+        out["source"] = "HISTORICAL_REPLAY (not live)" if is_replay else "LIVE_PROVIDER"
+        sims.put(out)
+        return jsonify(out), 201
 
-    @app.get("/api/simulations/<sid>")
-    def get_sim(sid):
+    @app.get("/api/analysis/<sid>")
+    def get_analysis(sid):
         s = sims.get(sid)
-        return jsonify(s) if s else err("Unknown simulation id.", 404)
+        return jsonify(s) if s else err("Unknown analysis id.", 404)
+
+    @app.get("/api/model/backtest")
+    def backtest_report():
+        import json
+        from railmind.data.predict import REPORT
+        from railmind.data.sim_check import OUT
+        rd = lambda p: json.loads(p.read_text()) if p.exists() else None  # noqa: E731
+        return jsonify({"delay_forecast_backtest": rd(REPORT), "simulation_vs_recorded": rd(OUT)})
 
     @app.post("/api/training")
     def start_training():
@@ -117,7 +146,7 @@ def create_app(provider=None) -> Flask:
         from railmind.rl.train import train
         if not jobs.start("training", train, steps, seed):
             return err("Training already running.", 409)
-        return jsonify({"status": "started", "label": SYNTHETIC_LABEL}), 202
+        return jsonify({"status": "started"}), 202
 
     @app.get("/api/training")
     def training_status():

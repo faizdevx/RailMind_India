@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import statistics
 import threading
 import time
 import uuid
@@ -10,10 +9,7 @@ from datetime import datetime, timezone
 
 from railmind.config import Config
 from railmind.providers.base import (BaseProvider, ProviderUnavailable, TrainStatus, build_provider)
-from railmind.rl.env import run_ppo
 from railmind.rl.train import META_PATH, load_model
-from railmind.sim.corridor import POLICIES, WEIGHTS, perturb, run_policy
-from railmind.sim.snapshot import build_scenario
 
 log = logging.getLogger("railmind")
 
@@ -73,94 +69,35 @@ def model_info() -> dict:
     return {"trained": False}
 
 
-_model_cache: dict = {}
+_cache: dict = {}
 
 
 def get_model():
-    if "m" not in _model_cache:
-        _model_cache["m"] = load_model()
-    return _model_cache["m"]
+    if "m" not in _cache:
+        _cache["m"] = load_model()
+    return _cache["m"]
 
 
-def explain_events(c, name: str) -> list:
-    """Templated, factual explanations of holds in a finished run (SIMULATED)."""
-    out = []
-    seen = set()
-    for e in c.events:
-        out.append({**e, "label": "SIMULATED"})
-    return out
+def get_knowledge():
+    if "kn" not in _cache:
+        from railmind.data import history
+        _cache["kn"] = history.load()
+    return _cache["kn"]
 
 
-def bottleneck(c) -> dict:
-    ws = c.wait_by_section
-    if not ws or max(ws) == 0:
-        return {"label": "SIMULATED", "text": "No queueing observed in this simulated run."}
-    s = max(range(len(ws)), key=lambda k: ws[k])
-    names = c.sc.station_names
-    return {"label": "SIMULATED SCENARIO", "section": s, "wait_minutes": ws[s],
-            "text": f"Most train-minutes spent waiting for section {names[s]} - {names[s + 1]} "
-                    f"({ws[s]} train-min). Cause within the simulation: single-track block/loop capacity; "
-                    "real-world cause NOT established (HYPOTHESIS)."}
-
-
-def simulate(status: dict, seed: int = 7, load: float = 1.0, extra_delay: int = 0,
-             n_runs: int = 20, jitter: int = 2) -> dict:
-    sc = build_scenario(status, seed=seed, load=load, extra_delay=extra_delay, jitter=jitter)
-    model = get_model()
-    policies = dict(POLICIES)
-    runs: dict = {}
-    for k, p in policies.items():
-        runs[k] = run_policy(sc, p)
-    if model is not None:
-        runs["ppo"] = run_ppo(model, sc)
-    # uncertainty: jitter run times over n_runs and compare on identical perturbed scenarios
-    saved = {k: [] for k in runs if k != "fcfs"}
-    obs_delay = {k: [] for k in runs}
-    for r in range(n_runs):
-        ps = perturb(sc, 1000 + r, jitter)
-        base = run_policy(ps, POLICIES["fcfs"]).summary()["per_train"][0]["delay"]
-        obs_delay["fcfs"].append(base)
-        for k in saved:
-            c = run_policy(ps, POLICIES[k]) if k in POLICIES else run_ppo(model, ps)
-            d = c.summary()["per_train"][0]["delay"]
-            obs_delay[k].append(d)
-            saved[k].append(base - d)
-
-    def ms(v):
-        return {"mean": round(statistics.fmean(v), 1), "std": round(statistics.pstdev(v), 1)} if v else None
-
-    out = {"id": uuid.uuid4().hex[:12], "created_utc": datetime.now(timezone.utc).isoformat(),
-           "label": "SIMULATED / PREDICTED - NOT REAL RAILWAY CONTROL",
-           "snapshot": {"train_no": status["train_no"], "provider": status["provider"],
-                        "retrieved_utc": status["retrieved_utc"],
-                        "observed_delay_min": status.get("delay_min"),
-                        "current_station": status.get("current_station")},
-           "assumptions": sc.assumptions, "station_names": sc.station_names,
-           "scenario": {"seed": seed, "load": load, "extra_delay": extra_delay,
-                        "uncertainty_runs": n_runs, "jitter_min": jitter},
-           "trains": [{"id": t.id, "name": t.name, "source": t.source,
-                       "class": ["freight", "passenger", "express"][t.prio],
-                       "direction": t.direction} for t in sc.trains],
-           "policies": {}, "model": model_info()}
-    for k, c in runs.items():
-        s = c.summary()
-        out["policies"][k] = {"summary": s, "tracks": c.tracks, "events": c.events,
-                              "bottleneck": bottleneck(c),
-                              "observed_train_delay_mean_std": ms(obs_delay[k]),
-                              "minutes_saved_vs_fcfs_mean_std": ms(saved.get(k, [])) if k != "fcfs" else None}
-    if "ppo" in runs:
-        a = out["policies"]["fcfs"]["summary"]["per_train"]
-        b = out["policies"]["ppo"]["summary"]["per_train"]
-        out["ppo_vs_fcfs"] = {
-            "helped": [x["name"] for x, y in zip(a, b) if x["delay"] - y["delay"] > 1],
-            "harmed": [x["name"] for x, y in zip(a, b) if y["delay"] - x["delay"] > 1],
-            "constraint_violations_executed": 0,
-            "attempted_violations_ppo": out["policies"]["ppo"]["summary"]["attempted_violations"]}
-    else:
-        out["ppo_note"] = "RL model NOT TRAINED - baselines only."
-    out["interpretation"] = ("Predicted minutes saved exist only inside this simulation on a simplified "
-                             "corridor with synthetic background traffic. They do not demonstrate "
-                             "real-world punctuality improvement.")
+def analyze_status(status: dict, n_mc: int = 15, single_line: bool = False, extra_delay: int = 0,
+                   seed: int = 0) -> dict:
+    from railmind.analysis import analyze
+    kn = get_knowledge()
+    if kn is None:
+        raise ProviderUnavailable("Historical knowledge not built. Run scripts/download_data.py and "
+                                  "python -m railmind.data.history", "no_knowledge", 503)
+    out = analyze(kn, status, model=get_model(), n_mc=n_mc, single_line=single_line,
+                  extra_delay=extra_delay, seed=seed)
+    out["id"] = uuid.uuid4().hex[:12]
+    out["created_utc"] = datetime.now(timezone.utc).isoformat()
+    out["model"] = model_info()
+    out["knowledge"] = kn.describe()
     return out
 
 
@@ -197,7 +134,7 @@ class Jobs:
                 res = fn(*a)
                 self.state[kind] = {"status": "completed", "result": res,
                                     "finished_utc": datetime.now(timezone.utc).isoformat()}
-                _model_cache.clear()
+                _cache.clear()
             except Exception as e:      # noqa: BLE001
                 log.exception("%s failed", kind)
                 self.state[kind] = {"status": "failed", "error": str(e)}

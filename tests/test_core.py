@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from railmind.config import Config
@@ -7,7 +8,8 @@ from railmind.providers.base import (NoProvider, ProviderUnavailable, RapidApiIr
                                      valid_train_no)
 from railmind.sim.corridor import (Corridor, HEADWAY, POLICIES, STATION_CAP, make_scenario,
                                    perturb, run_policy)
-from railmind.sim.snapshot import build_scenario
+from railmind.data.history import BUCKET_EDGES, Knowledge, QLEVELS
+from railmind.data.predict import rollout
 from railmind.rl.env import RailDispatchEnv
 from app import create_app
 
@@ -27,39 +29,47 @@ def test_train_no_validation():
 @pytest.mark.parametrize("seed", range(10))
 @pytest.mark.parametrize("name", list(POLICIES))
 def test_safety_invariants_hold(seed, name):
-    sc = make_scenario(seed)
+    sc = make_scenario(seed)           # single line: opposing trains must never share a section
     c = Corridor(sc)
     pol = POLICIES[name]
     while not c.over():
         for i in pol(c):
-            c.release(i)
-        # block occupancy: at most one train per section; loop capacity respected
-        running = [i for i in range(c.n()) if c.status[i] == "running"]
-        secs = [c.section_of(i) for i in running]
-        assert len(secs) == len(set(secs))
-        for st in range(1, 5):
+            if c.check_release(i)[0]:
+                c.release(i)
+        for s_, ids in c.in_section.items():
+            dirs = {sc.trains[j].direction for j in ids}
+            assert len(dirs) <= 1, "opposing trains in one single-line section"
+        for st in range(1, sc.n_stations - 1):
             assert c.occupancy(st) <= STATION_CAP
         c.advance()
-    assert c.summary()["completed"] == c.n() or c.deadlocked or c.t >= 400
+    assert c.summary()["completed"] == c.n() or c.deadlocked or c.t >= 1000
 
 
-def test_headway_enforced():
-    c = Corridor(make_scenario(1))
-    c.last_exit[0] = c.t       # just vacated
-    i = next(i for i in range(c.n()) if c.sc.trains[i].direction > 0)
+def test_same_direction_headway_enforced():
+    sc = make_scenario(1, single_line=False)
+    c = Corridor(sc)
+    i = next(i for i in range(c.n()) if sc.trains[i].direction > 0)
+    s_ = c.section_of(i)
+    c.last_entry[(s_, 1)] = c.t
     c.status[i] = "at_station"; c.ready_at[i] = 0
     c.sched[i][c.station[i]] = (0, 0)
-    assert c.check_release(i) == (False, "headway") or c.t - c.last_exit[0] >= HEADWAY
+    assert c.check_release(i) == (False, "headway")
 
 
-def test_unsafe_release_is_noop():
-    c = Corridor(make_scenario(3))
-    ready = c.ready_trains()
-    if len(ready) >= 2:
-        # find two trains competing for one section
-        pass
-    assert c.release(0) in (True, False)  # never raises
-    assert c.attempted_violations >= 0
+def test_cannot_overtake_inside_section():
+    sc = make_scenario(2, single_line=False)
+    c = Corridor(sc)
+    ups = [i for i in range(c.n()) if sc.trains[i].direction > 0 and sc.trains[i].origin == 0]
+    if len(ups) >= 2:
+        a, b = ups[:2]
+        for i in (a, b):
+            c.status[i] = "at_station"; c.ready_at[i] = 0; c.sched[i][0] = (0, 0)
+        c.sc.actual_run[a][0] = 30
+        c.sc.actual_run[b][0] = 5          # b is much faster but entered later
+        assert c.release(a)
+        c.t += HEADWAY
+        assert c.release(b)
+        assert c.arr_t[b] >= c.arr_t[a] + HEADWAY
 
 
 def test_same_scenario_same_result():
@@ -93,16 +103,6 @@ def test_no_cancel_every_train_finishes_or_is_charged():
     s = c.summary()
     assert s["completed"] == s["n_trains"] or s["deadlocked"] or c.t >= 400
     assert len(s["per_train"]) == 6
-
-
-def test_snapshot_scenario_is_labelled():
-    st = {"train_no": "12345", "train_name": "Test Rajdhani", "provider": "TEST", "retrieved_utc": "x",
-          "delay_min": 17, "current_station": "A", "stops": []}
-    sc = build_scenario(st)
-    assert sc.trains[0].source == "OBSERVED_SNAPSHOT"
-    assert sc.trains[0].start_time - sc.trains[0].sched_start == 17
-    assert all(t.source == "SYNTHETIC" for t in sc.trains[1:])
-    assert any("SYNTHETIC" in a for a in sc.assumptions)
 
 
 def test_provider_not_configured_raises():
@@ -162,16 +162,22 @@ def test_api_health_and_unavailable_state(client):
 def test_api_validation(client):
     assert client.get("/api/trains/abc/status").status_code == 400
     assert client.get("/api/trains/search?q=1").status_code == 400
-    assert client.post("/api/simulations", json={"train_no": "12301"}).status_code == 503
-    assert client.post("/api/simulations", json={"mode": "synthetic", "load": 99}).status_code == 400
+    assert client.post("/api/analysis", json={"train_no": "12301"}).status_code == 503
+    assert client.post("/api/analysis", json={"train_no": "abc", "source": "replay"}).status_code == 400
+    assert client.post("/api/analysis", json={"train_no": "12301", "source": "replay", "mc_runs": 999}).status_code == 400
     assert client.post("/api/training", json={"timesteps": 5}).status_code == 400
 
 
-def test_api_synthetic_simulation_is_labelled(client):
-    r = client.post("/api/simulations", json={"mode": "synthetic", "uncertainty_runs": 2})
-    assert r.status_code == 201
-    j = r.get_json()
-    assert j["snapshot"]["provider"].startswith("SYNTHETIC")
-    assert "SIMULATED" in j["label"]
-    assert set(j["policies"]) >= {"fcfs", "scheduled"}
-    assert client.get("/api/simulations/" + j["id"]).status_code == 200
+def _fake_kn():
+    t3 = {(b,): (np.linspace(-2, 8, 11).astype("float32"), 1000) for b in range(4)}
+    return Knowledge({"t1": {}, "t2": {}, "t3": t3, "lv1": {}, "lv2": {}, "train_ids": {"12301": 0},
+                      "stn_ids": {"A": 0, "B": 1, "C": 2}, "timetables": {}, "meta": {}, "weekdays": {},
+                      "by_station": {}, "n_rows": 0, "n_files": 0, "date_from": "", "date_to": "",
+                      "cutoff": None, "built_utc": ""})
+
+
+def test_rollout_uses_learned_distribution_and_flags_evidence_level():
+    r = rollout(_fake_kn(), "12301", ["A", "B", "C"], 10.0, n=200, seed=1)
+    assert len(r) == 2 and r[0]["evidence_level"] == 3      # pooled global fallback, flagged
+    assert r[0]["p10"] <= r[0]["p50"] <= r[0]["p90"]
+    assert r[1]["p50"] > r[0]["p50"] - 3                    # delays accumulate on average

@@ -1,0 +1,50 @@
+{
+  "model_version": "ppo_corridor_v2",
+  "trained_utc": "2026-10-12T11:20:55.615674+00:00",
+  "config": {
+    "algo": "PPO",
+    "policy": "MlpPolicy",
+    "learning_rate": 5e-05,
+    "n_steps": 4096,
+    "batch_size": 256,
+    "gamma": 1.0,
+    "ent_coef": 0.0,
+    "net_arch": [
+      128,
+      128
+    ],
+    "total_timesteps": 300000,
+    "seed": 0,
+    "warm_start": "behaviour cloning of FCFS rule",
+    "bc_episodes": 300,
+    "model_selection": "best of BC-only / PPO-final on validation seeds 50000+"
+  },
+  "bc": {
+    "bc_samples": 89607,
+    "bc_episodes": 300,
+    "bc_final_loss": 0.0003587859100662172
+  },
+  "validation_weighted_delay": {
+    "bc_only": 478.02,
+    "ppo_finetuned": 476.68
+  },
+  "selected_checkpoint": "ppo_finetuned",
+  "train_seconds": 261.1,
+  "stable_baselines3": "2.9.0",
+  "data": "historical NTES-derived delays + timetables (2025-02-08..2026-10-11); sampled scenarios",
+  "knowledge": {
+    "sections_rows": 16322374,
+    "trains": 9422,
+    "stations": 8562,
+    "files": 370,
+    "date_from": "2025-02-08",
+    "date_to": "2026-10-11",
+    "cutoff": null,
+    "built_utc": "2026-10-12T11:10:43Z",
+    "tables": {
+      "train_section_bucket": 342627,
+      "section_bucket": 101198
+    }
+  },
+  "validated_against_real_operations": false
+}

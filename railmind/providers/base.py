@@ -23,6 +23,8 @@ class ProviderUnavailable(Exception):
 
 @dataclass
 class StationStop:
+    seq: Optional[int] = None
+    passed: Optional[bool] = None
     name: Optional[str] = None
     code: Optional[str] = None
     sched_arr: Optional[str] = None
@@ -46,6 +48,7 @@ class TrainStatus:
     last_update_text: Optional[str] = None           # provider's own timestamp text, if any
     stops: list = field(default_factory=list)
     raw: Optional[dict] = None                       # untouched provider JSON
+    stops_meta: Optional[dict] = None
     missing_fields: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -194,7 +197,97 @@ class RapidApiIrctcProvider(BaseProvider):
         return st
 
 
+class RailRadarProvider(BaseProvider):
+    """RailRadar live running status (https://railradar.in/docs/live-train-status).
+
+    Endpoint, auth and top-level fields follow the vendor's public docs
+    (fetched 2026-10-12). NOT verified against a live response: no key was
+    available. Free sandbox reportedly 100 requests/month - budget accordingly.
+    Per-stop schedule/actual key names are not documented in the page text we
+    could read, so they are parsed defensively and `raw` is always kept.
+    """
+    name = "railradar"
+    verified = False
+
+    def __init__(self, cfg=Config, session=None):
+        self.cfg = cfg
+        self.http = session or requests.Session()
+        self.limiter = RateLimiter(cfg.MAX_CALLS_PER_MINUTE, cfg.MAX_CALLS_PER_DAY)
+        self.host = "api.railradar.in" if cfg.PROVIDER_HOST.startswith("irctc1") else cfg.PROVIDER_HOST
+        self.path = "/v1/trains/{number}/live"
+
+    def configured(self):
+        if not self.cfg.PROVIDER_API_KEY:
+            return False, ("RAILMIND_PROVIDER_API_KEY is empty. Create a RailRadar account/API key "
+                           "(railradar.in) and set it in .env.")
+        return True, f"Using https://{self.host}{self.path}"
+
+    def fetch(self, train_no: str) -> TrainStatus:
+        ok, why = self.configured()
+        if not ok:
+            raise ProviderUnavailable(why, "not_configured")
+        self.limiter.acquire()
+        url = f"https://{self.host}{self.path.format(number=train_no)}"
+        try:
+            r = self.http.get(url, headers={"Authorization": f"Bearer {self.cfg.PROVIDER_API_KEY}"},
+                              params={"haltsOnly": "true"}, timeout=self.cfg.HTTP_TIMEOUT)
+        except requests.RequestException as e:
+            raise ProviderUnavailable(f"Provider request failed: {type(e).__name__}", "network", 502)
+        if r.status_code == 429:
+            raise ProviderUnavailable("Provider rate limit / quota exceeded (HTTP 429).", "rate_limited", 429)
+        if r.status_code in (401, 403):
+            raise ProviderUnavailable(f"Provider rejected credentials (HTTP {r.status_code}).", "auth", 502)
+        if r.status_code == 404:
+            raise ProviderUnavailable("Train not found at provider (HTTP 404).", "not_found", 404)
+        if r.status_code >= 400:
+            raise ProviderUnavailable(f"Provider returned HTTP {r.status_code}.", "provider_error", 502)
+        try:
+            body = r.json()
+        except ValueError:
+            raise ProviderUnavailable("Provider returned non-JSON response.", "bad_response", 502)
+        return self.parse(train_no, body)
+
+    def parse(self, train_no: str, body) -> TrainStatus:
+        now = datetime.now(timezone.utc).isoformat()
+        d = body.get("data", body) if isinstance(body, dict) else {}
+        if not isinstance(d, dict):
+            d = {}
+        loc = d.get("currentLocation") or {}
+        st = TrainStatus(train_no=train_no, provider=self.name, retrieved_utc=now, raw=body)
+        st.train_name = _first(d, "trainName")
+        st.current_station_code = _first(loc, "stationCode")
+        st.current_station = st.current_station_code
+        st.delay_min = _int(_first(d, "delayMinutes"))
+        st.last_update_text = _first(d, "lastUpdatedAt")
+        prev, nxt = d.get("previousHalt") or {}, d.get("nextHalt") or {}
+        st.previous_station = _first(prev, "stationName", "stationCode")
+        st.next_station = _first(nxt, "stationName", "stationCode")
+        for r_ in d.get("route") or []:
+            if not isinstance(r_, dict):
+                continue
+            st.stops.append(StationStop(
+                seq=_int(_first(r_, "sequence")), name=_first(r_, "stationName"),
+                code=_first(r_, "stationCode"),
+                sched_arr=_first(r_, "scheduledArrival", "scheduledArrivalTime", "sta"),
+                actual_arr=_first(r_, "actualArrival", "actualArrivalTime", "eta"),
+                sched_dep=_first(r_, "scheduledDeparture", "scheduledDepartureTime", "std"),
+                actual_dep=_first(r_, "actualDeparture", "actualDepartureTime", "etd"),
+                delay_min=_int(_first(r_, "delayArrival", "delayDeparture")),
+                passed=None))
+        st.stops_meta = {"is_live": d.get("isLive"), "status": d.get("status"),
+                         "segment_progress": loc.get("segmentProgress"),
+                         "is_actual_position": loc.get("isActualPosition")}
+        for k in ("train_name", "current_station", "delay_min"):
+            if getattr(st, k) is None:
+                st.missing_fields.append(k)
+        if not st.stops:
+            st.missing_fields.append("route/stops")
+        return st
+
+
 def build_provider(cfg=Config) -> BaseProvider:
+    if cfg.PROVIDER == "railradar":
+        return RailRadarProvider(cfg)
     if cfg.PROVIDER in ("rapidapi_irctc", "rapidapi"):
         return RapidApiIrctcProvider(cfg)
     return NoProvider()

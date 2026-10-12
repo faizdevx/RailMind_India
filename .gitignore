@@ -12,3 +12,4 @@ models/*.tmp
 app.log
 app.err
 models/_bc_tmp.zip
+data/

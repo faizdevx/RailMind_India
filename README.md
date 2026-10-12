@@ -1,140 +1,109 @@
 # RailMind India
 
-Research prototype: a Flask dashboard that (left) shows **observed** Indian Railways train
-status from an authorised live-data provider and (right) runs a **simulated, counterfactual**
-single-track corridor comparing scheduled-order and first-come-first-served dispatching with a
-PPO policy trained on **synthetic** scenarios.
+Dashboard that, for one Indian Railways train, (1) takes its observed status, (2) compares it with
+delay patterns **learned from ~16 million historical per-stop observations**, (3) explains where the
+delay was gained, with evidence labels, (4) forecasts the delay ahead with uncertainty, and (5) runs a
+**simulated** what-if around nearby trains with FCFS / scheduled-order baselines and a PPO policy.
 
-> It is not railway control software. It never sends commands to railway infrastructure, and
-> simulated improvements do **not** prove real-world punctuality gains.
+> Not railway control software. It never sends commands to infrastructure. Simulated gains do not
+> prove real-world punctuality gains.
 
-![RailMind dashboard - live provider NOT configured; synthetic demo simulation shown](docs/screenshots/railmind-live-dashboard.png)
+![RailMind dashboard - recorded replay (NOT live); live provider not configured](docs/screenshots/railmind-live-dashboard.png)
 
-**Screenshot honesty:** the image above is a genuine capture of the running app, but **live data
-was not available** (no authorised provider credential exists in this environment). The left
-panel shows the honest "unavailable" state; the right panel shows the clearly labelled
-`SYNTHETIC DATA - NOT REAL INDIAN RAILWAYS DATA` demo. No real-time capture was made.
+**Screenshot honesty:** a genuine capture of the running app, but with **no live data**: no provider
+credential exists in this environment. The left panel shows "live provider NOT configured" and a
+**recorded replay** (train 11014, labelled NOT LIVE) of an actual run from 2026-10-09 in the public
+dataset. It is not a real-time capture.
 
-## Status of live data
+## What is real, what is not
 
-| Item | State |
+| Item | Status |
 |---|---|
-| Official source | NTES (indianrail.gov.in) is the public portal; **no public API or data terms were found**, so it is not scraped. |
-| Adapter implemented | `rapidapi_irctc` (third-party RapidAPI IRCTC-style API). **Written from public descriptions, never run against a live response** - endpoint path and field names are unverified. |
-| Credential | None present. Live status is **not verified**. |
-| What you must supply | An authorised API key (and its documented host/path) for a provider whose terms permit this use; see below. |
+| Historical data | **Real**: Hugging Face [`pjay-in/indian-railways-delays`](https://huggingface.co/datasets/pjay-in/indian-railways-delays) (cc-by-4.0). 370 daily files, 2025-02-08 .. 2026-10-11, 16.3 M section observations, 9 422 trains. An observed NTES-collected config (2026-10) plus a 2025-02..2026-02 config whose "actual" times are scheduled + reported delay. Station *names* are not in the data (codes only). |
+| Live status | **Not verified.** Adapters `railradar` (vendor docs; free sandbox reportedly 100 requests/month) and `rapidapi_irctc` exist but were never run against a live response (no key). NTES has no documented public API or data terms, so it is not scraped. |
+| Replay | `source=replay` re-plays the latest recorded run of a train, truncated at a stop ("now"). Labelled `HISTORICAL_REPLAY (not live)`. The recorded future is shown only afterwards, for evaluation. |
+| Nearby trains | From historical timetables of the same stations (weekday matched). Whether they run today and where they are right now is **not known**; their initial delays are sampled from history. |
+| Track layout | **Assumed** (double line, loop capacity 3, 2-min headway; single line optional). Not in any data. |
 
-Without credentials the API returns HTTP 503 `not_configured`, and the UI says so. No
-live-looking data is ever substituted.
+## How it works
 
-## Architecture
+1. `railmind/data/history.py` learns, per (train, section, incoming-delay bucket), the empirical
+   distribution of delay change, with pooled fall-backs (train+section, section, global).
+2. `railmind/data/predict.py` rolls delay forward by Monte Carlo: p10/p50/p90 per stop, with the
+   evidence level shown.
+3. `railmind/analysis.py` compares each observed section and halt with its historical percentile and
+   labels causes `OBSERVED`, `LEARNED`, `SIMULATED` or `HYPOTHESIS`. Weather, maintenance, signal faults
+   and rake linkage have no data feed and are only ever `HYPOTHESIS`.
+4. `railmind/data/scenario.py` builds a corridor of at most 6 stops with up to 5 nearby trains;
+   `railmind/sim/corridor.py` enforces headway, no overtaking inside a section, loop capacity and
+   (single line) exclusive sections, independently of reward. Holds are capped at 20 min.
+5. `railmind/rl/`: Gymnasium env + PPO (Stable-Baselines3). Warm start by imitating FCFS, then PPO;
+   checkpoint chosen on validation scenarios. Target trains with number % 5 == 0 are held out.
 
-```
-app.py                    Flask app factory + REST API
-railmind/config.py        env / .env config (no secrets in code)
-railmind/providers/       provider adapters, rate limiter, normalised TrainStatus
-railmind/services.py      cache + stale detection, simulation orchestration, job runner
-railmind/sim/corridor.py  corridor simulator, hard safety rules, FCFS & scheduled-order baselines
-railmind/sim/snapshot.py  builds a labelled scenario from a provider snapshot
-railmind/rl/              Gymnasium env, PPO training, held-out evaluation
-templates/ static/        dashboard (HTML/CSS/JS, Plotly time-distance diagrams)
-docs/SOURCES.md           sources consulted and what each supports
-```
-
-### Digital-twin scope
-A **6-station single-track corridor** with crossing loops (capacity 3), block occupancy (1 train
-per section), 2-minute headway, and a 20-minute cap on holding a ready, safe train (applies to
-every policy). Everything else about the real network (signalling, gradients, speed limits,
-platforms, rolling-stock) is **not modelled**. The observed train gets its real reported delay,
-and its route/schedule when the provider supplies them; background trains are synthetic and
-labelled. Assumptions are listed in the dashboard for every run.
-
-### Safety vs. reward
-Safety checks live in `Corridor.check_release`, independent of reward. Unsafe requests are
-no-ops, counted, and slightly penalised. There is no cancel action; unfinished trains are
-charged lateness at the horizon; holds are capped; reward includes a max-delay (fairness) term.
-
-## Install & run
+## Install and run
 
 ```bash
-python -m venv .venv && .venv\Scripts\activate    # Windows; use source .venv/bin/activate elsewhere
 pip install -r requirements.txt
-copy .env.example .env                             # then edit .env
-python app.py                                      # http://127.0.0.1:5000  (RAILMIND_PORT to change)
+python scripts/download_data.py            # ~172 MB, cc-by-4.0, to data/raw (git-ignored)
+python -m railmind.data.history            # learn patterns -> data/processed (~2-3 min)
+python app.py                              # http://127.0.0.1:5000  (RAILMIND_PORT to change)
 ```
+
+Pick **Historical replay** or **Live provider**, enter a train number (the datalist offers known
+trains), press *Fetch & analyse*. Controls: extra delay, single/double line, MC runs, seed, play, pause,
+reset, speed.
 
 ### Configuring a live provider
-1. Obtain an authorised key from a provider whose terms allow your use; check its docs for the
-   live-status endpoint and response format.
-2. In `.env` set `RAILMIND_PROVIDER=rapidapi_irctc`, `RAILMIND_PROVIDER_API_KEY=...`, and the
-   provider's `RAILMIND_PROVIDER_HOST` / `RAILMIND_PROVIDER_STATUS_PATH`.
-3. Set budgets to match your plan: `RAILMIND_MAX_CALLS_PER_MINUTE`, `RAILMIND_MAX_CALLS_PER_DAY`,
-   `RAILMIND_MIN_REFRESH_SECONDS` (responses are cached for that long).
-4. Query one train, compare the raw JSON (`status.raw`) with the provider's docs, and adjust
-   `RapidApiIrctcProvider.parse` if keys differ. Fields not found are listed as `missing_fields`.
-
-`.env` is git-ignored. Never commit keys.
-
-### Using the app
-- **Search:** enter a 5-digit train number, press *Search / fetch* (one provider call, then cached).
-- **Simulate:** *Simulate this train* builds a corridor scenario from that snapshot; *Run SYNTHETIC
-  demo* needs no provider. Use Play / Pause / Reset and the speed selector; seed, load and extra
-  delay are scenario settings. `Runs` perturbs section run times to give mean +/- std.
-- **Compare:** observed provider delay is shown separately from the predicted delays under
-  scheduled-order, FCFS and PPO, with helped/harmed trains and violations.
+Create an account and key with your chosen provider, then in `.env` (copy `.env.example`):
+`RAILMIND_PROVIDER=railradar`, `RAILMIND_PROVIDER_API_KEY=...`. Budgets:
+`RAILMIND_MAX_CALLS_PER_MINUTE`, `RAILMIND_MAX_CALLS_PER_DAY`, `RAILMIND_MIN_REFRESH_SECONDS`
+(responses are cached). Compare `status.raw` with the vendor docs and adjust
+`RailRadarProvider.parse` if per-stop field names differ (unverified). `.env` is git-ignored.
 
 ### API
-`GET /api/health` - `GET /api/trains/search?q=` - `GET /api/trains/<no>/status` -
-`POST /api/simulations` (`{train_no}` or `{mode:"synthetic"}`, `seed`, `load`, `extra_delay`,
-`uncertainty_runs`) - `GET /api/simulations/<id>` - `POST|GET /api/training` -
+`GET /api/health` - `GET /api/trains/<no>/status` - `GET /api/replay/trains` -
+`POST /api/analysis` (`train_no`, `source` live|replay, `at`, `extra_delay`, `single_line`, `mc_runs`,
+`seed`) - `GET /api/analysis/<id>` - `GET /api/model/backtest` - `POST|GET /api/training` -
 `POST|GET /api/evaluation`.
 
-## Training and evaluation
-
+### Reproduce the measurements
 ```bash
-python -m railmind.rl.train --timesteps 400000     # writes models/ppo_corridor_v1.zip + .json
-python -m railmind.rl.evaluate --scenarios 100     # writes models/ppo_corridor_v1_eval.json
+python -m railmind.data.history --cutoff 2025-12-01   # learn only from before the cutoff
+python -m railmind.data.predict                       # forecast backtest on later dates
+python -m railmind.rl.train --timesteps 300000        # PPO, about 5 min on CPU
+python -m railmind.rl.evaluate --scenarios 150        # held-out target trains
+python -m railmind.data.sim_check                     # simulation vs recorded outcomes
 ```
 
-Training: synthetic scenarios, seeds 0-99 999; behaviour-cloning warm start from the FCFS rule
-(300 episodes), then PPO (SB3 2.9.0, lr 5e-5, n_steps 4096, gamma 1.0, MLP 128x128, 400 000
-steps, seed 0). The final checkpoint is chosen on validation seeds 50 000+; evaluation uses
-disjoint held-out seeds 100 000-100 099. Same scenario, same realised run times for every policy.
+## Measured results (committed runs in `models/`)
 
-### Measured results (this repo's committed run, 100 held-out synthetic scenarios, 6 trains each)
+**Delay forecast.** Learned before 2025-12-01, tested on 6 000 runs from later dates (74 files,
+2025-12 .. 2026-10). Mean absolute error of the median forecast, minutes:
 
-| Policy | Weighted delay (mean +/- std) | Max train delay (mean, min) | Completed | Deadlocks | Forced releases / run |
-|---|---|---|---|---|---|
-| Scheduled-order | 369.21 +/- 123.31 | 63.75 | 100 % | 0 | 4.35 |
-| FCFS | 287.64 +/- 80.01 | 56.35 | 100 % | 0 | 1.88 |
-| PPO (v1) | 287.47 +/- 82.79 | 55.95 | 100 % | 0 | 2.16 |
+| Stops ahead | Learned | Persistence (current delay) | 10-90 % interval coverage |
+|---|---|---|---|
+| 1 | 3.77 | 5.52 | 81.7 % |
+| 3 | 7.32 | 11.08 | 85.1 % |
+| 5 | 10.08 | 15.96 | 84.3 % |
 
-Against FCFS, PPO helped (>1 min) 77 train-instances and harmed 86. PPO attempted 16 unsafe
-requests in total; the simulator blocked all of them (executed violations: 0).
-**Conclusion: PPO is statistically indistinguishable from FCFS here.** The earlier from-scratch
-PPO attempt was worse than FCFS (462.6 weighted delay) and was discarded in favour of the
-warm-started run. No claim of RL improvement is made. Numbers are synthetic-only and **not
-validated against real railway operations**.
+**Simulation vs recorded outcomes.** 150 replays of observed 2026-10 runs, 488 stop predictions, MAE in
+minutes: persistence 18.29, learned forecast **15.62**, simulation alone 16.76, simulation with nearby
+trains 19.88. **The corridor simulation is not more accurate than the learned forecast**, and its
+nearby-train interaction currently adds error. Treat it as an exploratory what-if, not a forecast.
 
-## Data provenance
-
-| Data | Origin | Label |
-|---|---|---|
-| Left-panel train status | Configured provider response (none available here) | OBSERVED |
-| Age / stale flag | Computed locally | calculated |
-| Corridor, background trains, PPO training/eval scenarios | `make_scenario` RNG | SYNTHETIC DATA - NOT REAL INDIAN RAILWAYS DATA |
-| Right-panel results | Simulator / PPO | SIMULATED / PREDICTED |
-
-Root causes: simulated queueing is reported as `SIMULATED SCENARIO`; weather, maintenance and
-infrastructure faults are `HYPOTHESIS` only (no evidence feed). Sources: [docs/SOURCES.md](docs/SOURCES.md).
+**RL (PPO v2).** 150 held-out scenarios, weighted delay (mean; std about 755): FCFS 553.9,
+scheduled-order 557.6, PPO 550.7. Target-train mean delay 81.0 / 79.3 / 80.1 min. PPO helped 28 and
+harmed 42 train-instances (more than 1 min). Differences are well inside noise: **no demonstrated RL
+improvement**. PPO requests blocked as unsafe: 4 336 (none executed). Not validated against real
+operations.
 
 ## Limitations
-- Live provider unverified; adapter parser may need adjustment against real responses.
-- Corridor is abstract; direction, loop capacity and run times are assumptions.
-- Observed delay (now, at some station) and predicted delay (at corridor end) are different quantities.
-- Real-world cause attribution is not possible with the data available.
-- Position progress is never computed or shown as confirmed.
+- Live path unverified; the forecast model needs the downloaded data.
+- In the "derived" config delay is one number per stop; dwell/run split is inferred.
+- No weather, maintenance, signalling or rake-link data; causes beyond observed deltas are hypotheses.
+- Corridor at most 6 stops / about 5 h; train class inferred from category; no freight in the data.
+- Sources and provider research: [docs/SOURCES.md](docs/SOURCES.md).
 
 ## Tests
-`python -m pytest -q` - 37 passed (safety invariants across seeds/policies, determinism, provider
-parsing and error handling, rate limiting, API validation and honest unavailable state, labelling).
+`python -m pytest -q`: 36 passed (safety invariants, headway and no-overtake, determinism, provider
+parsing and errors, rate limiting, API validation and honest unavailable states, forecast roll-forward).

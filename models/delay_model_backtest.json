@@ -1,0 +1,38 @@
+{
+  "queries": 6000,
+  "by_horizon_stops_ahead": {
+    "1": {
+      "n": 6000,
+      "mae_model_p50_min": 3.77,
+      "mae_persistence_min": 5.52,
+      "p10_p90_coverage": 0.817,
+      "mean_interval_width_min": 10.9
+    },
+    "2": {
+      "n": 6000,
+      "mae_model_p50_min": 5.78,
+      "mae_persistence_min": 8.59,
+      "p10_p90_coverage": 0.838,
+      "mean_interval_width_min": 19.8
+    },
+    "3": {
+      "n": 6000,
+      "mae_model_p50_min": 7.32,
+      "mae_persistence_min": 11.08,
+      "p10_p90_coverage": 0.851,
+      "mean_interval_width_min": 26.2
+    },
+    "5": {
+      "n": 6000,
+      "mae_model_p50_min": 10.08,
+      "mae_persistence_min": 15.96,
+      "p10_p90_coverage": 0.843,
+      "mean_interval_width_min": 36.7
+    }
+  },
+  "learned_before": "2025-12-01",
+  "learned_files": 296,
+  "tested_files": 74,
+  "tested_range": "2025-12-01..2026-10-11",
+  "note": "Held-out dates. Derived config has delay = reported delay per stop; observed NTES config included in the test range (2026-10)."
+}

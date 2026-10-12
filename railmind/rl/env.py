@@ -13,7 +13,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from railmind.sim.corridor import (Corridor, MAX_MINUTES, MAX_POLICY_HOLD, N_STATIONS,
+from railmind.sim.corridor import (Corridor, MAX_MINUTES, MAX_POLICY_HOLD,
                                    WEIGHTS, make_scenario)
 
 N_TRAINS = 6
@@ -25,29 +25,35 @@ HELDOUT_SEED_BASE = 100_000
 class RailDispatchEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, n_trains: int = N_TRAINS, seed: int = 0, scenario=None):
+    def __init__(self, n_trains: int = N_TRAINS, seed: int = 0, scenario=None, sampler=None):
         super().__init__()
         self.n = n_trains
         self.action_space = spaces.Discrete(self.n + 1)
         self.observation_space = spaces.Box(-5.0, 5.0, shape=(self.n * FEATS + 1,), dtype=np.float32)
         self._rng = np.random.default_rng(seed)
         self._fixed = scenario
+        self._sampler = sampler   # callable(rng) -> Scenario (data-driven training)
         self.c: Corridor | None = None
         self._acts_this_min = 0
 
     # -- observation --------------------------------------------------
     def _obs(self) -> np.ndarray:
         c = self.c
+        ns = max(1, c.sc.n_stations - 1)
         out = []
-        for i, tr in enumerate(c.sc.trains):
+        for i in range(self.n):
+            if i >= len(c.sc.trains):
+                out += [0, 0, 0, 1] + [0.0] * 8        # padded slot: looks like a finished train
+                continue
+            tr = c.sc.trains[i]
             st = c.status[i]
             ready = c.is_ready(i)
             safe = c.check_release(i)[0]
             sd = c.sched[i].get(c.station[i], (0, 0))[1]
             late = np.clip((c.t - sd) / 60.0, -1, 4) if st != "done" else 0.0
-            remaining = abs(tr.dest - c.station[i]) / (N_STATIONS - 1)
+            remaining = abs(tr.dest - c.station[i]) / ns
             out += [st == "pending", st == "at_station", st == "running", st == "done",
-                    tr.direction, tr.prio / 2.0, c.station[i] / (N_STATIONS - 1),
+                    tr.direction, tr.prio / 2.0, c.station[i] / ns,
                     float(ready), float(safe), c.hold[i] / MAX_POLICY_HOLD, late, remaining]
         out.append(c.t / MAX_MINUTES)
         return np.asarray(out, dtype=np.float32)
@@ -58,6 +64,8 @@ class RailDispatchEnv(gym.Env):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
         sc = (options or {}).get("scenario") or self._fixed
+        if sc is None and self._sampler is not None:
+            sc = self._sampler(self._rng)
         if sc is None:
             sc = make_scenario(int(self._rng.integers(TRAIN_SEED_BASE, HELDOUT_SEED_BASE)), self.n)
         self.c = Corridor(sc)
@@ -68,7 +76,10 @@ class RailDispatchEnv(gym.Env):
         c = self.c
         reward = 0.0
         advance = action == self.n
-        if not advance:
+        if not advance and action >= len(c.sc.trains):
+            reward -= 0.05
+            advance = True
+        elif not advance:
             ok = c.release(int(action))
             if not ok and c.check_release(int(action))[1] != "not ready":
                 reward -= 0.2

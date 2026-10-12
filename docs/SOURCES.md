@@ -30,3 +30,13 @@ prototype; no source below specifies those numbers.**
 | Station dwell time | Model parameter (assumed 0/1/2 min by class) | SIMULATED SCENARIO |
 | Late incoming opposing train | Visible in simulated waits | SIMULATED SCENARIO |
 | Maintenance restrictions, weather, infrastructure faults | No provider field or credible live feed integrated | HYPOTHESIS (never attributed) |
+
+## Historical data and provider research (added 2026-10-12)
+
+| Source | Retrieved | Supports |
+|---|---|---|
+| [HF dataset pjay-in/indian-railways-delays](https://huggingface.co/datasets/pjay-in/indian-railways-delays) | 2026-10-12 | cc-by-4.0. Observed config: NTES-collected per-stop scheduled/actual times (reported or estimated). 2025-02-08..2026-02-07 config: converted from a Kaggle dataset (MIT); actual = scheduled + one delay per stop, so intermediate departures are absent. Used for all learning. |
+| [RSTGCN (GitHub)](https://github.com/KoyenaChowdhury/RSTGCN) | 2026-10-12 | Existence of a Sept-2024 delay dataset (no licence stated). Not used. |
+| [RailRadar live status docs](https://railradar.in/docs/live-train-status) | 2026-10-12 | Endpoint `GET /v1/trains/{number}/live`, Bearer auth, fields (delayMinutes, currentLocation, route[]), reported free sandbox of 100 requests/month. Adapter written from this; **not run against a live response**. |
+| [Railway Engine](https://railengine.vercel.app/) | 2026-10-12 | Another free-tier keyed provider (x-api-key). Not implemented. |
+| ntes-client / TrainTrack (unofficial) | 2026-10-12 | Keyless but rely on scraping NTES; may breach NTES terms, not evaluated, not used. |

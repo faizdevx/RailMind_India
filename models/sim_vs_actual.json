@@ -1,0 +1,12 @@
+{
+  "queries": 150,
+  "stop_predictions": 488,
+  "mae_min": {
+    "persistence": 18.29,
+    "learned_p50": 15.62,
+    "sim_alone": 16.76,
+    "sim_fcfs": 19.88,
+    "sim_best": 19.69
+  },
+  "note": "Observed NTES config (2026-10), knowledge built only from data before 2025-12-01. Simulation includes explicit nearby-train conflicts under assumed topology."
+}

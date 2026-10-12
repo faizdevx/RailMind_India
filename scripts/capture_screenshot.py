@@ -1,7 +1,8 @@
 """Capture a genuine screenshot of the running app (no mockups).
 
-Usage: python scripts/capture_screenshot.py [--url http://127.0.0.1:5057] [--train 12301]
-Uses system Edge/Chrome via Playwright. Reports honestly whether live data was shown.
+Usage: python scripts/capture_screenshot.py [--url http://127.0.0.1:5057] [--train 11014] [--out PATH]
+If a live provider is configured the live source is used; otherwise the recorded-replay
+source is used and the image is labelled as NOT LIVE in the README.
 """
 import argparse
 import json
@@ -30,16 +31,14 @@ with sync_playwright() as p:
     pg = b.new_page(viewport={"width": 1700, "height": 1250})
     pg.goto(a.url)
     pg.wait_for_selector("#health")
-    pg.fill("#trainNo", a.train or "12301")
-    pg.click("#searchForm button")
     pg.wait_for_timeout(1500)
-    if live and a.train:
-        pg.click("button[data-sim]")
-    else:
-        pg.click("#simSyn")
-    pg.wait_for_selector("#compare table", timeout=60000)
+    pg.select_option("#source", "live" if live else "replay")
+    if a.train:
+        pg.fill("#trainNo", a.train)
+    pg.click("#go")
+    pg.wait_for_selector("#compare table", timeout=120000)
     pg.wait_for_timeout(500)
-    pg.evaluate("state.t = state.tmax; draw();")
+    pg.evaluate("state.t = Math.round(state.tmax * 0.6); draw();")
     pg.wait_for_timeout(1000)
     pg.screenshot(path=a.out, full_page=True)
     b.close()

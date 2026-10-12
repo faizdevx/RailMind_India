@@ -1,0 +1,49 @@
+{
+  "evaluated_utc": "2026-10-12T11:21:38.197333+00:00",
+  "n_scenarios": 150,
+  "seeds": "rng seed 777000; target trains held out (train number % 5 == 0), never used as training targets",
+  "data": "scenarios sampled from historical timetables/delays 2025-02-08..2026-10-11",
+  "target_train_mean_delay": {
+    "fcfs": 80.99,
+    "scheduled": 79.27,
+    "ppo": 80.07
+  },
+  "metrics": {
+    "fcfs": {
+      "weighted_delay_mean": 553.89,
+      "weighted_delay_std": 764.32,
+      "mean_train_delay_mean": 77.33,
+      "max_delay_mean": 175.57,
+      "completed_fraction": 0.993,
+      "deadlocks": 1,
+      "forced_releases_mean": 0.13,
+      "attempted_violations_total": 0
+    },
+    "scheduled": {
+      "weighted_delay_mean": 557.62,
+      "weighted_delay_std": 754.55,
+      "mean_train_delay_mean": 78.09,
+      "max_delay_mean": 173.09,
+      "completed_fraction": 0.993,
+      "deadlocks": 1,
+      "forced_releases_mean": 0.43,
+      "attempted_violations_total": 0
+    },
+    "ppo": {
+      "weighted_delay_mean": 550.68,
+      "weighted_delay_std": 755.16,
+      "mean_train_delay_mean": 76.85,
+      "max_delay_mean": 175.97,
+      "completed_fraction": 0.993,
+      "deadlocks": 1,
+      "forced_releases_mean": 0.06,
+      "attempted_violations_total": 4336
+    }
+  },
+  "ppo_trained": true,
+  "ppo_vs_fcfs_train_outcomes": {
+    "helped_gt_1min": 28,
+    "harmed_gt_1min": 42
+  },
+  "note": "Simulated corridor with assumed topology. Not validated against real railway operations."
+}
