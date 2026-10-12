@@ -17,9 +17,11 @@ import pandas as pd
 
 from railmind.data import history as H
 from railmind.data.predict import percentile_of, rollout
-from railmind.data.scenario import build_scenario, find_stop_index
+from railmind.data.scenario import apply_section_extra, build_scenario, find_stop_index
 from railmind.rl.env import run_ppo
 from railmind.sim.corridor import POLICIES, Scenario, run_policy
+from railmind.weather import service as wxs
+from railmind.weather.openmeteo import ATTRIBUTION, WeatherUnavailable
 
 
 def ist_now() -> datetime:
@@ -117,15 +119,103 @@ def build_causes(kn, status, obs, sim_info) -> list:
                              "replays the simulated interactions did not improve accuracy over the learned forecast."
                              if cm >= 1 else
                              "Simulated corridor shows no meaningful loss from nearby trains.")})
-    out.append({"label": "HYPOTHESIS", "cause": "Weather, maintenance restrictions, signal/equipment faults, "
+    out.append({"label": "HYPOTHESIS", "cause": "Maintenance restrictions, signal/equipment faults, "
                                                 "late incoming rake",
                 "text": "No feed for these is integrated, and rake linkage is not in the data. They may explain "
                         "delay but cannot be attributed from the available evidence."})
     return out
 
 
+def _stop_time(s: dict) -> Optional[str]:
+    for k in ("actual_dep", "actual_arr", "sched_dep", "sched_arr"):
+        t = _ts(s.get(k))
+        if t is not None:
+            return t.strftime("%Y-%m-%dT%H:%M")
+    return None
+
+
+def weather_block(obs: dict, ahead: list, tt_sched: dict, d0: float, roll: list, now: datetime) -> dict:
+    """Weather at passed stops (context for observed delay) and ahead stops (expected time)."""
+    passed = [s for s in obs["passed"] if s.get("code")]
+    items = [{"code": s["code"], "time": _stop_time(s)} for s in passed]
+    n_p = len(items)
+    for c in ahead:
+        s = tt_sched.get(c, {})
+        t = _ts(s.get("actual_arr")) or _ts(s.get("sched_arr"))
+        if t is not None and s.get("actual_arr") is None:
+            t = t + timedelta(minutes=max(0.0, d0))
+        items.append({"code": c, "time": t.strftime("%Y-%m-%dT%H:%M") if t else None})
+    try:
+        ws = wxs.route_weather(items, now)
+    except WeatherUnavailable:
+        ws = [None] * len(items)
+    rows = []
+    for i, (it, w) in enumerate(zip(items, ws)):
+        rows.append({"code": it["code"], "time": it["time"], "phase": "passed" if i < n_p else "ahead",
+                     "cond": w, "severity": wxs.severity(w) if w else None,
+                     "text": wxs.summary_text(w) if w else "weather unavailable"})
+    ahead_w = ws[n_p:]
+    stops_a = []
+    for k, c in enumerate(ahead[:-1]):
+        a, b = tt_sched.get(c, {}), tt_sched.get(ahead[k + 1], {})
+        run = _mins(_ts(a.get("sched_dep")) or _ts(a.get("sched_arr")), _ts(b.get("sched_arr")))
+        stops_a.append({"code": c, "sched_run": run if run and run > 0 else 60})
+    stops_a.append({"code": ahead[-1], "sched_run": 60})
+    delays = [r["p50"] for r in roll] if roll else []
+    dl = [d0] + delays[:len(stops_a) - 1]
+    dl += [dl[-1]] * (len(stops_a) - len(dl))
+    adj = wxs.adjustments(stops_a, ahead_w, dl, now.month)
+    return {"rows": rows, "ahead_codes": ahead, "adjust_min": adj, "n_passed": n_p}
+
+
+def weather_causes(wb: dict, obs: dict, eff: Optional[dict]) -> list:
+    out = []
+    by_code = {r["code"]: r for r in wb["rows"] if r["phase"] == "passed"}
+    sig = {k: v for k, v in (eff or {}).get("effects_by_condition", {}).items()
+           if isinstance(v, dict) and v.get("significant")}
+    gains = [s for s in obs["sections"] if s["delta"] >= 4]
+    adverse = []
+    for s in gains:
+        w = by_code.get(s["from"])
+        if w and w["cond"] and w["severity"]:
+            adverse.append((s, w))
+    seen = {r["code"] for r in wb["rows"] if r["phase"] == "passed" and r["cond"]}
+    if adverse:
+        for s, w in adverse[:3]:
+            c = w["cond"]
+            learned = []
+            for key, on in (("rain_heavy", c["rain"] == "heavy"), ("rain_moderate", c["rain"] == "moderate"),
+                            ("rain_light", c["rain"] == "light"), ("fog", c["fog"]),
+                            ("strong_wind", c["strong_wind"]), ("heat", c["heat"]), ("cold", c["cold"])):
+                if on and key in sig:
+                    e = sig[key]
+                    learned.append(f"{key.replace('_', ' ')}: {e['mean_extra_delay_min']:+.1f} min per section "
+                                   f"historically (95% CI {e['ci95'][0]:+.1f}..{e['ci95'][1]:+.1f}, n={e['n']})")
+            out.append({"label": "LEARNED" if learned else "CONTEXT",
+                        "cause": f"Adverse weather near {s['from']} while delay grew +{s['delta']:.0f} min",
+                        "text": f"{w['text']} at {w['time']}. "
+                                + ("; ".join(learned) + ". " if learned else
+                                   "No statistically reliable learned effect for this condition. ")
+                                + "Co-occurrence only; it supports, but does not prove, weather as the cause."})
+    elif gains and seen:
+        out.append({"label": "CONTEXT", "cause": "Weather at delay-gaining sections",
+                    "text": "Reanalysis weather at the stops where delay grew was benign (no heavy rain, fog, "
+                            "strong gusts, extreme heat/cold). Weather is not supported as the explanation "
+                            "for those sections."})
+    ahead_bad = [r for r in wb["rows"] if r["phase"] == "ahead" and r["severity"]]
+    if ahead_bad:
+        r = ahead_bad[0]
+        tot = sum(wb["adjust_min"]) if wb["adjust_min"] else 0
+        out.append({"label": "PREDICTED", "cause": "Adverse weather ahead",
+                    "text": f"{len(ahead_bad)} upcoming stop(s) with adverse conditions, first {r['code']} "
+                            f"around {r['time']}: {r['text']}. Learned model adds about {tot:+.0f} min over the "
+                            "forecast horizon (0 if the model was not accepted)."})
+    return out
+
+
 def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: int = 15,
-            single_line: bool = False, extra_delay: int = 0, seed: int = 0) -> dict:
+            single_line: bool = False, extra_delay: int = 0, seed: int = 0,
+            use_weather: bool = True) -> dict:
     tno = status["train_no"]
     d0 = float(status.get("delay_min") or 0)
     raw = status.get("raw") or {}
@@ -156,7 +246,7 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
            "observed": {"sections": obs["sections"], "dwell": obs["dwell"]},
            "learned_model_available": bool(known), "limitations": [
                "Predictions are statistical (history) and simulated (assumed topology); not railway control.",
-               "Station names unavailable in the historical data; codes shown.",
+               "Station names come from the live provider when supplied; historical data has codes only.",
                "Simulated improvement does not prove real-world punctuality improvement."]}
     if not known:
         res["warning"] = (f"Train {tno} not found in learned history: no learned pattern, no simulation. "
@@ -177,6 +267,19 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
         r["name"] = names.get(r["station"])
         r["provider_estimate"] = s.get("delay_min")
         r["provenance"] = s.get("provenance")
+    wb = None
+    if use_weather:
+        wb = weather_block(obs, ahead, tt_sched, d0 + extra_delay, roll, now)
+        cum = 0.0
+        for k, r in enumerate(roll):
+            cum += wb["adjust_min"][k] if k < len(wb["adjust_min"]) else 0.0
+            r["wx_adjust_cum"] = round(cum, 1)
+            r["p50_wx"] = round(r["p50"] + cum, 1)
+        wmap = {r["code"]: r for r in wb["rows"] if r["phase"] == "ahead"}
+        for r in roll:
+            w = wmap.get(r["station"])
+            r["weather"] = w["text"] if w else None
+            r["weather_severity"] = w["severity"] if w else None
     res["learned_forecast"] = {"method": "Monte-Carlo roll-forward of historical delay change per "
                                          "(train, section, incoming-delay bucket)",
                                "stops": roll, "label": "LEARNED / PREDICTED"}
@@ -186,6 +289,12 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
                         extra_delay=extra_delay, category_hint=cat_hint) if anchor else None
     sim_info: dict = {}
     names_map = names
+    sec_extra: dict = {}
+    if sc is not None and wb is not None:
+        by_from = {c_: wb["adjust_min"][k] for k, c_ in enumerate(wb["ahead_codes"][:-1])
+                   if k < len(wb["adjust_min"])}
+        sec_extra = {sec: by_from.get(sc.station_names[sec], 0.0) for sec in range(sc.n_stations - 1)}
+        apply_section_extra(sc, sec_extra)
     if sc is None:
         res["simulation"] = {"available": False, "reason": "Current station not on the learned timetable "
                                                           "or too close to route end."}
@@ -206,6 +315,8 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
         for r in range(n_mc):
             s2 = build_scenario(kn, tno, anchor, d0, now, seed=1000 + r, sample=True,
                                 single_line=single_line, extra_delay=extra_delay, category_hint=cat_hint)
+            if sec_extra:
+                apply_section_extra(s2, sec_extra)
             for k in det:
                 c = run_policy(s2, POLICIES[k]) if k in POLICIES else run_ppo(model, s2)
                 p0 = c.summary()["per_train"][0]
@@ -253,6 +364,15 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
                             "label": "SIMULATED SCENARIO"} if bn is not None else None),
             "alone_delay": alone_delay, "alone_stops": alone_stops, "mc_runs": n_mc}
     res["causes"] = build_causes(kn, status, obs, sim_info)
+    if wb is not None:
+        eff = wxs.effects()
+        res["causes"][-1:-1] = weather_causes(wb, obs, eff)          # before the generic hypothesis
+        res["weather"] = {"attribution": ATTRIBUTION, "rows": wb["rows"],
+                          "model_accepted": bool(wxs.residual_model() is not None),
+                          "sim_extra_min_by_section": sec_extra,
+                          "learned": ({k: eff[k] for k in ("train_rows", "test_rows", "heldout_mae_min",
+                                                          "accepted", "train_range", "test_range")}
+                                      if eff else None)}
     truth = (raw.get("truth_after_now") if isinstance(raw, dict) else None) or []
     if truth:
         fc = {r["station"]: r for r in roll}

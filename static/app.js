@@ -5,7 +5,7 @@ const state = { a: null, t: 0, tmax: 0, timer: null, health: null };
 const COLORS = ["#19c3d6", "#ffb020", "#3ddc97", "#ff5d5d", "#b38cff", "#ff8fd0", "#9fb4cc"];
 const fx = (v, d = 0) => (v === null || v === undefined || Number.isNaN(v)) ? "n/a" : Number(v).toFixed(d);
 const sgn = (v) => (v > 0 ? "+" : "") + fx(v);
-const TAG = { OBSERVED: "obs", LEARNED: "calc", SIMULATED: "sim", HYPOTHESIS: "hyp" };
+const TAG = { OBSERVED: "obs", LEARNED: "calc", SIMULATED: "sim", HYPOTHESIS: "hyp", CONTEXT: "calc", PREDICTED: "sim" };
 
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -60,7 +60,7 @@ function onSource() { $("atWrap").classList.toggle("hidden", $("source").value !
 function params() {
   const replay = $("source").value === "replay";
   return { train_no: $("trainNo").value.trim(), source: replay ? "replay" : "live", at: (+$("at").value) / 100,
-           extra_delay: +$("extra").value, single_line: $("line").value === "1", mc_runs: +$("runs").value, seed: +$("seed").value };
+           extra_delay: +$("extra").value, single_line: $("line").value === "1", mc_runs: +$("runs").value, seed: +$("seed").value, use_weather: $("wx").value === "1" };
 }
 
 async function run() {
@@ -82,7 +82,7 @@ async function run() {
 function renderAll() {
   const a = state.a, replay = a.source.startsWith("HISTORICAL");
   const rows = (a.learned_forecast.stops || []).map((r) =>
-    `<tr><td>${esc(r.name ? r.name + " (" + r.station + ")" : r.station)}</td><td>${esc(r.sched_arr || "-")}</td><td>${r.provider_estimate === null || r.provider_estimate === undefined ? "-" : sgn(r.provider_estimate) + (r.provenance === "predicted" ? ' <span class="tag calc">provider-predicted</span>' : ' <span class="tag obs">reported</span>')}</td><td>${sgn(r.p50)}</td><td>${sgn(r.p10)} .. ${sgn(r.p90)}</td><td>${r.evidence_level === 1 ? "train+section" : r.evidence_level === 2 ? "section pooled" : "global fallback"} (n=${r.support_n})</td></tr>`).join("");
+    `<tr><td>${esc(r.name ? r.name + " (" + r.station + ")" : r.station)}</td><td>${esc(r.sched_arr || "-")}</td><td>${r.provider_estimate === null || r.provider_estimate === undefined ? "-" : sgn(r.provider_estimate) + (r.provenance === "predicted" ? ' <span class="tag calc">provider-predicted</span>' : ' <span class="tag obs">reported</span>')}</td><td>${sgn(r.p50)}</td><td>${r.p50_wx === undefined ? "-" : sgn(r.p50_wx) + (r.wx_adjust_cum ? " <small>(" + sgn(r.wx_adjust_cum) + ")</small>" : "")}</td><td>${sgn(r.p10)} .. ${sgn(r.p90)}</td><td>${r.weather ? (r.weather_severity ? '<span class="tag hyp">' + esc(r.weather) + '</span>' : esc(r.weather)) : "-"}</td><td>${r.evidence_level === 1 ? "train+section" : r.evidence_level === 2 ? "section pooled" : "global fallback"} (n=${r.support_n})</td></tr>`).join("");
   $("train").innerHTML = `<div class="card">
     <h4>${esc(a.train_no)} ${esc(a.train_name || "(name not supplied)")} <span class="tag ${replay ? "calc" : "obs"}">${replay ? "RECORDED REPLAY - NOT LIVE" : "OBSERVED"}</span></h4>
     <div class="kv">
@@ -103,8 +103,19 @@ function renderAll() {
     (a.causes || []).map((c) => `<div class="box"><span class="tag ${TAG[c.label] || "calc"}">${esc(c.label)}</span> <b>${esc(c.cause)}</b><br>${esc(c.text)}</div>`).join("") +
     (secs ? `<h3>Observed delay change per section vs history</h3><table><tr><th>Section</th><th>Delay (min)</th><th>Change</th><th>Percentile in history</th></tr>${secs}</table>` : "");
   $("forecast").innerHTML = rows
-    ? `<table><tr><th>Stop</th><th>Scheduled</th><th>Provider delay</th><th>Learned median</th><th>10-90 %</th><th>Evidence</th></tr>${rows}</table><p class="sub">${esc(a.learned_forecast.method)}.</p>`
+    ? `<table><tr><th>Stop</th><th>Scheduled</th><th>Provider delay</th><th>Learned median</th><th>+ weather</th><th>10-90 %</th><th>Weather (expected time)</th><th>Evidence</th></tr>${rows}</table><p class="sub">${esc(a.learned_forecast.method)}.</p>`
     : "<p class='sub'>No forecast available.</p>";
+  const W = a.weather;
+  if (W) {
+    const wr = W.rows.filter((r) => r.phase === "ahead" || r.severity).map((r) =>
+      `<tr><td>${esc((a.station_names && a.station_names[r.code]) || r.code)} (${esc(r.code)})</td><td>${esc((r.time || "").replace("T", " "))}</td><td>${r.phase === "passed" ? "passed" : "expected"}</td><td>${r.cond ? esc(r.text) : "unavailable"}</td><td>${r.cond ? (r.cond.temp_c === null ? "-" : fx(r.cond.temp_c, 0) + " C") : "-"} / ${r.cond && r.cond.precip_mm !== null ? fx(r.cond.precip_mm, 1) + " mm" : "-"} / ${r.cond && r.cond.gust_kmh !== null ? fx(r.cond.gust_kmh, 0) + " km/h" : "-"}</td></tr>`).join("");
+    const L = W.learned;
+    $("weather").innerHTML = `<h3>Weather along the route <span class="tag calc">CONTEXT</span></h3>
+      <p class="sub">${esc(W.attribution)}. Past stops: reanalysis; ahead: forecast at expected time. Learned weather model: ${W.model_accepted ? "ACCEPTED (beat weather-free baseline on held-out dates)" : "not accepted / not available - no weather adjustment applied"}${L ? "; held-out error " + fx(L.heldout_mae_min.baseline_median, 2) + " &rarr; " + fx(L.heldout_mae_min.baseline_plus_weather, 2) + " min per section" : ""}.</p>
+      <table><tr><th>Stop</th><th>Time</th><th></th><th>Conditions</th><th>Temp / rain / gust</th></tr>${wr || '<tr><td colspan="5">no adverse conditions and no stops with weather</td></tr>'}</table>`;
+  } else {
+    $("weather").innerHTML = "";
+  }
   const sim = a.simulation;
   if (!sim || !sim.available) {
     $("simMeta").className = "box warn"; $("simMeta").textContent = "Simulation unavailable: " + ((sim && sim.reason) || a.warning || "n/a");

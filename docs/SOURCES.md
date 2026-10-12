@@ -40,3 +40,11 @@ prototype; no source below specifies those numbers.**
 | [RailRadar live status docs](https://railradar.in/docs/live-train-status) | 2026-10-12 | Endpoint `GET /v1/trains/{number}/live`, Bearer auth, fields (delayMinutes, currentLocation, route[]), reported free sandbox of 100 requests/month. Adapter written from this; **not run against a live response**. |
 | [Railway Engine](https://railengine.vercel.app/) | 2026-10-12 | Another free-tier keyed provider (x-api-key). Not implemented. |
 | ntes-client / TrainTrack (unofficial) | 2026-10-12 | Keyless but rely on scraping NTES; may breach NTES terms, not evaluated, not used. |
+
+## Weather (added 2026-10-12)
+
+| Source | Supports |
+|---|---|
+| [Open-Meteo terms](https://open-meteo.com/en/terms) | Free API without key for non-commercial use; limits 600/min, 5 000/h, 10 000/day; CC BY 4.0 attribution. This project is a non-commercial research prototype. |
+| [Open-Meteo historical API](https://open-meteo.com/en/docs/historical-weather-api) | Archive endpoint, hourly temperature, humidity, dew point, precipitation, gusts, WMO code; multi-location requests. Visibility is not provided (returned null), so fog is a proxy. |
+| [datameet/railways](https://github.com/datameet/railways) `stations.json` | 8 990 stations, 8 697 with coordinates; no licence stated in the repo. Used only locally for weather lookup, not redistributed. |

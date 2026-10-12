@@ -36,3 +36,4 @@ th{color:var(--mute);font-weight:500}
 ul{margin:4px 0;padding-left:18px;color:var(--mute);font-size:12px}
 footer{padding:12px 16px;color:var(--mute);font-size:12px;border-top:1px solid var(--line)}
 .good{color:var(--ok)}.badtxt{color:var(--bad)}
+a{color:var(--accent)}

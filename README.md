@@ -26,6 +26,40 @@ learned forecast, simulated what-if and measured accuracy of each method.
 | Nearby trains | From historical timetables of the same stations (weekday matched). Whether they run today and where they are right now is **not known**; their initial delays are sampled from history. |
 | Track layout | **Assumed** (double line, loop capacity 3, 2-min headway; single line optional). Not in any data. |
 
+## Weather (Open-Meteo)
+
+Weather is used in three ways, all labelled and all measured before being trusted:
+
+1. **Context per stop**: temperature, rain, gusts and a fog flag at each stop at the time the train
+   was/will be there (reanalysis for the past, forecast for the future).
+2. **Evidence for / against weather as a cause**: for every section where delay grew, the weather at
+   that place and hour is checked. Benign weather => "weather is not supported as the explanation";
+   adverse weather => shown as co-occurring context, plus the *learned* effect size when significant.
+3. **Forecast and simulation adjustment**: a gradient-boosted model of weather-related delay change
+   per section. It is applied only if it beats the weather-free baseline on held-out dates.
+
+Source: [Open-Meteo](https://open-meteo.com/) (free, no key, **non-commercial use**, CC BY 4.0;
+free limits 600/min, 10 000/day). Station coordinates: `stations.json` from
+[datameet/railways](https://github.com/datameet/railways) (repo states no licence; downloaded locally,
+not committed). Archive weather has no visibility variable, so fog uses a humidity/dew-point proxy.
+
+**Measured** (120 busiest stations, 707 k training sections before 2025-12-01, 346 k held-out
+sections after; delay change minus the historical median for that train/section):
+
+| Condition | Sections | Extra delay per section (95 % CI) | Significant |
+|---|---|---|---|
+| light rain | 78 895 | +0.06 (-0.03..+0.16) | no |
+| moderate rain | 11 714 | **+0.68** (+0.46..+0.95) | yes |
+| heavy rain | 2 015 | **+0.68** (+0.07..+1.32) | yes |
+| fog (proxy) | 2 057 | +0.27 (-0.22..+0.81) | no |
+| strong gusts | 7 586 | 0.00 (-0.22..+0.26) | no |
+| extreme heat | 1 314 | +0.18 (-0.49..+0.74) | no |
+
+Rain has a real but **small** effect (under 1 min per section). The residual model changed held-out MAE
+from 7.621 to 7.617 min per section, so it is **not accepted** and applies no adjustment. In this
+dataset weather explains little delay; its main value here is ruling weather in or out as a cause.
+Re-run: `python -m railmind.weather.learn` (about 15 min, rate-limited weather downloads).
+
 ## How it works
 
 1. `railmind/data/history.py` learns, per (train, section, incoming-delay bucket), the empirical
@@ -63,9 +97,9 @@ Create an account and key with your chosen provider, then in `.env` (copy `.env.
 `.env` is git-ignored; never commit the key.
 
 ### API
-`GET /api/health` - `GET /api/trains/<no>/status` - `GET /api/replay/trains` -
+`GET /api/weather/effects` - `GET /api/health` - `GET /api/trains/<no>/status` - `GET /api/replay/trains` -
 `POST /api/analysis` (`train_no`, `source` live|replay, `at`, `extra_delay`, `single_line`, `mc_runs`,
-`seed`) - `GET /api/analysis/<id>` - `GET /api/model/backtest` - `POST|GET /api/training` -
+`seed`, `use_weather`) - `GET /api/analysis/<id>` - `GET /api/model/backtest` - `POST|GET /api/training` -
 `POST|GET /api/evaluation`.
 
 ### Reproduce the measurements
@@ -109,11 +143,12 @@ The observed halts at Gudur (+20) and Katpadi (+13) are reported facts; their ca
 ## Limitations
 - Live adapter checked on two trains only; some forecast stops fall back to pooled statistics.
 - In the "derived" config delay is one number per stop; dwell/run split is inferred.
-- No weather, maintenance, signalling or rake-link data; causes beyond observed deltas are hypotheses.
+- Weather is hourly 9 km-class data (no fog visibility in archive); maintenance, signalling and rake-link have no data; those causes stay hypotheses.
 - Simulation spread is large for late trains (Monte-Carlo std ~64 min in the live example).
 - Corridor at most 6 stops / about 5 h; train class inferred from category; no freight in the data.
 - Sources and provider research: [docs/SOURCES.md](docs/SOURCES.md).
 
 ## Tests
-`python -m pytest -q`: 36 passed (safety invariants, headway and no-overtake, determinism, provider
-parsing and errors, rate limiting, API validation and honest unavailable states, forecast roll-forward).
+`python -m pytest -q`: 43 passed (safety invariants, headway and no-overtake, determinism, provider
+parsing and errors, rate limiting, API validation and honest unavailable states, forecast roll-forward,
+weather flags, cache, alignment and cause logic).

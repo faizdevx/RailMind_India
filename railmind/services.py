@@ -86,14 +86,14 @@ def get_knowledge():
 
 
 def analyze_status(status: dict, n_mc: int = 15, single_line: bool = False, extra_delay: int = 0,
-                   seed: int = 0) -> dict:
+                   seed: int = 0, use_weather: bool = True) -> dict:
     from railmind.analysis import analyze
     kn = get_knowledge()
     if kn is None:
         raise ProviderUnavailable("Historical knowledge not built. Run scripts/download_data.py and "
                                   "python -m railmind.data.history", "no_knowledge", 503)
     out = analyze(kn, status, model=get_model(), n_mc=n_mc, single_line=single_line,
-                  extra_delay=extra_delay, seed=seed)
+                  extra_delay=extra_delay, seed=seed, use_weather=use_weather)
     out["id"] = uuid.uuid4().hex[:12]
     out["created_utc"] = datetime.now(timezone.utc).isoformat()
     out["model"] = model_info()

@@ -103,6 +103,7 @@ def create_app(provider=None) -> Flask:
             extra = int(body.get("extra_delay", 0))
             seed = int(body.get("seed", 0))
             single = bool(body.get("single_line", False))
+            use_wx = bool(body.get("use_weather", True))
         except (TypeError, ValueError):
             return err("mc_runs/extra_delay/seed must be numeric.")
         if not (1 <= mc <= 60 and 0 <= extra <= 180 and 0 <= seed < 10**6):
@@ -114,7 +115,8 @@ def create_app(provider=None) -> Flask:
         except ProviderUnavailable as e:
             return err("No verified snapshot: " + e.reason, e.http, code=e.code)
         try:
-            out = analyze_status(snap, n_mc=mc, single_line=single, extra_delay=extra, seed=seed)
+            out = analyze_status(snap, n_mc=mc, single_line=single, extra_delay=extra, seed=seed,
+                                 use_weather=use_wx)
         except ProviderUnavailable as e:
             return err(e.reason, e.http, code=e.code)
         out["source"] = "HISTORICAL_REPLAY (not live)" if is_replay else "LIVE_PROVIDER"
@@ -125,6 +127,13 @@ def create_app(provider=None) -> Flask:
     def get_analysis(sid):
         s = sims.get(sid)
         return jsonify(s) if s else err("Unknown analysis id.", 404)
+
+    @app.get("/api/weather/effects")
+    def weather_effects():
+        from railmind.weather import service as wxs
+        from railmind.weather.openmeteo import ATTRIBUTION
+        return jsonify({"effects": wxs.effects(), "attribution": ATTRIBUTION,
+                        "terms": "Open-Meteo free API: non-commercial use, CC BY 4.0"})
 
     @app.get("/api/model/backtest")
     def backtest_report():

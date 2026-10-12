@@ -1,0 +1,103 @@
+{
+  "built_utc": "2026-10-12T12:04:37Z",
+  "stations": 120,
+  "train_rows": 706576,
+  "test_rows": 346232,
+  "train_range": "<2025-12-01",
+  "test_range": ">=2025-12-01",
+  "weather_source": "Open-Meteo archive (reanalysis), CC BY 4.0",
+  "effects_by_condition": {
+    "rain_light": {
+      "n": 78895,
+      "mean_extra_delay_min": 0.06,
+      "ci95": [
+        -0.03,
+        0.16
+      ],
+      "share_gain_ge5_on": 0.198,
+      "share_gain_ge5_off": 0.198,
+      "significant": false
+    },
+    "rain_moderate": {
+      "n": 11714,
+      "mean_extra_delay_min": 0.68,
+      "ci95": [
+        0.46,
+        0.95
+      ],
+      "share_gain_ge5_on": 0.217,
+      "share_gain_ge5_off": 0.198,
+      "significant": true
+    },
+    "rain_heavy": {
+      "n": 2015,
+      "mean_extra_delay_min": 0.68,
+      "ci95": [
+        0.07,
+        1.32
+      ],
+      "share_gain_ge5_on": 0.213,
+      "share_gain_ge5_off": 0.198,
+      "significant": true
+    },
+    "fog": {
+      "n": 2057,
+      "mean_extra_delay_min": 0.27,
+      "ci95": [
+        -0.22,
+        0.81
+      ],
+      "share_gain_ge5_on": 0.191,
+      "share_gain_ge5_off": 0.198,
+      "significant": false
+    },
+    "strong_wind": {
+      "n": 7586,
+      "mean_extra_delay_min": 0.0,
+      "ci95": [
+        -0.22,
+        0.26
+      ],
+      "share_gain_ge5_on": 0.187,
+      "share_gain_ge5_off": 0.198,
+      "significant": false
+    },
+    "heat": {
+      "n": 1314,
+      "mean_extra_delay_min": 0.18,
+      "ci95": [
+        -0.49,
+        0.74
+      ],
+      "share_gain_ge5_on": 0.209,
+      "share_gain_ge5_off": 0.198,
+      "significant": false
+    },
+    "cold": {
+      "n": 0,
+      "note": "too few observations (n<200)"
+    },
+    "_baseline_share_gain_ge5": 0.198
+  },
+  "heldout_mae_min": {
+    "baseline_median": 7.621,
+    "baseline_plus_weather": 7.617,
+    "adverse_weather_rows": 33662,
+    "baseline_on_adverse": 12.418,
+    "with_weather_on_adverse": 12.419
+  },
+  "accepted": false,
+  "acceptance_rule": "held-out MAE must fall by >=1 % and must not rise on adverse-weather rows",
+  "features": [
+    "precip",
+    "gust",
+    "rh",
+    "temp",
+    "dew_gap",
+    "hour",
+    "month",
+    "d_prev",
+    "srun"
+  ],
+  "seconds": 57.0
+}

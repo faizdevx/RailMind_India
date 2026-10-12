@@ -30,6 +30,7 @@
     <div id="msg"></div>
     <div id="train"></div>
     <div id="causes"></div>
+    <div id="weather"></div>
   </section>
 
   <section class="panel" id="right">
@@ -38,6 +39,7 @@
     <div class="controls">
       <label>Extra delay (min) <input id="extra" type="number" value="0" min="0" max="180"></label>
       <label>Track <select id="line"><option value="0">Double line (assumed)</option><option value="1">Single line</option></select></label>
+      <label>Weather <select id="wx"><option value="1">Use weather</option><option value="0">Ignore weather</option></select></label>
       <label>MC runs <input id="runs" type="number" value="15" min="1" max="60"></label>
       <label>Seed <input id="seed" type="number" value="0" min="0"></label>
       <button id="rerun" class="alt">Re-run what-if</button>
@@ -67,7 +69,7 @@
     <div id="prov" class="sub"></div>
   </section>
 </main>
-<footer>RailMind India - station names come from the live provider when supplied (historical data has codes only). Models are not validated against real railway operations.</footer>
+<footer>RailMind India - station names come from the live provider when supplied (historical data has codes only). Weather data by <a href="https://open-meteo.com/">Open-Meteo.com</a> (CC BY 4.0). Models are not validated against real railway operations.</footer>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
