@@ -82,7 +82,7 @@ async function run() {
 function renderAll() {
   const a = state.a, replay = a.source.startsWith("HISTORICAL");
   const rows = (a.learned_forecast.stops || []).map((r) =>
-    `<tr><td>${esc(r.station)}</td><td>${esc(r.sched_arr || "-")}</td><td>${sgn(r.p50)}</td><td>${sgn(r.p10)} .. ${sgn(r.p90)}</td><td>${r.evidence_level === 1 ? "train+section" : r.evidence_level === 2 ? "section pooled" : "global fallback"} (n=${r.support_n})</td></tr>`).join("");
+    `<tr><td>${esc(r.name ? r.name + " (" + r.station + ")" : r.station)}</td><td>${esc(r.sched_arr || "-")}</td><td>${r.provider_estimate === null || r.provider_estimate === undefined ? "-" : sgn(r.provider_estimate) + (r.provenance === "predicted" ? ' <span class="tag calc">provider-predicted</span>' : ' <span class="tag obs">reported</span>')}</td><td>${sgn(r.p50)}</td><td>${sgn(r.p10)} .. ${sgn(r.p90)}</td><td>${r.evidence_level === 1 ? "train+section" : r.evidence_level === 2 ? "section pooled" : "global fallback"} (n=${r.support_n})</td></tr>`).join("");
   $("train").innerHTML = `<div class="card">
     <h4>${esc(a.train_no)} ${esc(a.train_name || "(name not supplied)")} <span class="tag ${replay ? "calc" : "obs"}">${replay ? "RECORDED REPLAY - NOT LIVE" : "OBSERVED"}</span></h4>
     <div class="kv">
@@ -91,7 +91,9 @@ function renderAll() {
       <div>Delay now</div><div>${fx(a.observed_delay_min)} min <span class="tag obs">reported</span></div>
       <div>Snapshot time (IST)</div><div>${esc(a.now_ist)}</div>
       <div>Retrieved (UTC)</div><div>${esc(a.retrieved_utc)}</div>
-      <div>Position</div><div>${replay ? "recorded stop" : "provider-reported; not independently confirmed"}</div>
+      <div>Position</div><div>${replay ? "recorded stop" : esc((a.tracking && a.tracking.location_status) || "provider-reported") + " at " + esc((a.station_names && a.station_names[a.current_station]) || a.current_station) + "; not independently confirmed"}</div>
+      <div>Provider tracking</div><div>${esc((a.tracking && a.tracking.tracking_mode) || "n/a")}, live=${esc(String(a.tracking && a.tracking.is_live))}</div>
+      <div>Anchor for model</div><div>${esc(a.anchor_station || "n/a")} <small>(last timetable halt used as corridor start)</small></div>
     </div>
     ${a.warning ? `<div class="box warn">${esc(a.warning)}</div>` : ""}
   </div>`;
@@ -101,7 +103,7 @@ function renderAll() {
     (a.causes || []).map((c) => `<div class="box"><span class="tag ${TAG[c.label] || "calc"}">${esc(c.label)}</span> <b>${esc(c.cause)}</b><br>${esc(c.text)}</div>`).join("") +
     (secs ? `<h3>Observed delay change per section vs history</h3><table><tr><th>Section</th><th>Delay (min)</th><th>Change</th><th>Percentile in history</th></tr>${secs}</table>` : "");
   $("forecast").innerHTML = rows
-    ? `<table><tr><th>Stop</th><th>Scheduled</th><th>Median delay</th><th>10-90 %</th><th>Evidence</th></tr>${rows}</table><p class="sub">${esc(a.learned_forecast.method)}.</p>`
+    ? `<table><tr><th>Stop</th><th>Scheduled</th><th>Provider delay</th><th>Learned median</th><th>10-90 %</th><th>Evidence</th></tr>${rows}</table><p class="sub">${esc(a.learned_forecast.method)}.</p>`
     : "<p class='sub'>No forecast available.</p>";
   const sim = a.simulation;
   if (!sim || !sim.available) {

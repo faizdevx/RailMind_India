@@ -131,13 +131,28 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
     raw = status.get("raw") or {}
     if now is None:
         now = _ts(raw.get("now_ist")) if isinstance(raw, dict) else None
+    if now is None and "replay" not in str(status.get("provider", "")).lower():
+        now = ist_now()                  # live: snapshot time is retrieval time
     now = now or ist_now()
     obs = observed_facts(kn, status)
     cur_code = status.get("current_station_code") or status.get("current_station")
+    sm = status.get("stops_meta") or {}
+    names = {s_["code"]: s_.get("name") for s_ in (status.get("stops") or []) if s_.get("code") and s_.get("name")}
+    names = {c_: n_ for c_, n_ in names.items() if n_ != c_}
+    anchor = cur_code
+    if kn is not None and kn.timetable(tno) and find_stop_index(kn, tno, cur_code) is None:
+        # provider position is not a timetable stop (e.g. a non-halt): anchor to the last known halt before it
+        codes_route = [s_["code"] for s_ in obs["stops"]]
+        cur_i = obs["cur_idx"] if obs["cur_idx"] is not None else 0
+        for c_ in reversed(codes_route[: cur_i + 1]):
+            if find_stop_index(kn, tno, c_) is not None:
+                anchor = c_
+                break
     known = kn is not None and kn.train_id(tno) >= 0 and kn.timetable(tno) is not None
     res = {"train_no": tno, "train_name": status.get("train_name"), "provider": status["provider"],
            "retrieved_utc": status.get("retrieved_utc"), "now_ist": now.isoformat(timespec="minutes"),
            "observed_delay_min": status.get("delay_min"), "current_station": cur_code,
+           "anchor_station": anchor, "station_names": names, "tracking": sm,
            "observed": {"sections": obs["sections"], "dwell": obs["dwell"]},
            "learned_model_available": bool(known), "limitations": [
                "Predictions are statistical (history) and simulated (assumed topology); not railway control.",
@@ -151,19 +166,26 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
     # --- learned roll-forward (data-driven "how will it run further") -----------------
     route = [s["code"] for s in obs["stops"]] or [s[0] for s in kn.timetable(tno)["stops"]]
     ci = obs["cur_idx"] if obs["cur_idx"] is not None else (route.index(cur_code) if cur_code in route else 0)
+    if anchor in route:
+        ci = route.index(anchor)
     ahead = route[ci: ci + 9]
     tt_sched = {s["code"]: s for s in obs["stops"]}
     roll = rollout(kn, tno, ahead, d0 + extra_delay, n=400, seed=seed) if len(ahead) > 1 else []
     for r in roll:
         s = tt_sched.get(r["station"], {})
         r["sched_arr"] = s.get("sched_arr")
+        r["name"] = names.get(r["station"])
+        r["provider_estimate"] = s.get("delay_min")
+        r["provenance"] = s.get("provenance")
     res["learned_forecast"] = {"method": "Monte-Carlo roll-forward of historical delay change per "
                                          "(train, section, incoming-delay bucket)",
                                "stops": roll, "label": "LEARNED / PREDICTED"}
     # --- counterfactual corridor ---------------------------------------------------
-    sc = build_scenario(kn, tno, cur_code, d0, now, seed=seed, single_line=single_line,
-                        extra_delay=extra_delay) if cur_code else None
+    cat_hint = sm.get("category") or sm.get("type")
+    sc = build_scenario(kn, tno, anchor, d0, now, seed=seed, single_line=single_line,
+                        extra_delay=extra_delay, category_hint=cat_hint) if anchor else None
     sim_info: dict = {}
+    names_map = names
     if sc is None:
         res["simulation"] = {"available": False, "reason": "Current station not on the learned timetable "
                                                           "or too close to route end."}
@@ -182,8 +204,8 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
         mc = {k: [] for k in det}
         stops_mc = {k: {} for k in det}
         for r in range(n_mc):
-            s2 = build_scenario(kn, tno, cur_code, d0, now, seed=1000 + r, sample=True,
-                                single_line=single_line, extra_delay=extra_delay)
+            s2 = build_scenario(kn, tno, anchor, d0, now, seed=1000 + r, sample=True,
+                                single_line=single_line, extra_delay=extra_delay, category_hint=cat_hint)
             for k in det:
                 c = run_policy(s2, POLICIES[k]) if k in POLICIES else run_ppo(model, s2)
                 p0 = c.summary()["per_train"][0]
@@ -194,7 +216,8 @@ def analyze(kn, status: dict, model=None, now: Optional[datetime] = None, n_mc: 
         def ms(v):
             return {"mean": round(statistics.fmean(v), 1), "std": round(statistics.pstdev(v), 1),
                     "p10": round(float(np.percentile(v, 10)), 1), "p90": round(float(np.percentile(v, 90)), 1)}
-        names = sc.station_names
+        names = [names_map.get(c_, c_) for c_ in sc.station_names]
+        sc.station_names = names
         pols = {}
         for k, c in det.items():
             s = c.summary()

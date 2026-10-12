@@ -8,19 +8,20 @@ delay was gained, with evidence labels, (4) forecasts the delay ahead with uncer
 > Not railway control software. It never sends commands to infrastructure. Simulated gains do not
 > prove real-world punctuality gains.
 
-![RailMind dashboard - recorded replay (NOT live); live provider not configured](docs/screenshots/railmind-live-dashboard.png)
+![RailMind dashboard - live railradar data, train 12626, 2026-10-12 17:04 IST](docs/screenshots/railmind-live-dashboard.png)
 
-**Screenshot honesty:** a genuine capture of the running app, but with **no live data**: no provider
-credential exists in this environment. The left panel shows "live provider NOT configured" and a
-**recorded replay** (train 11014, labelled NOT LIVE) of an actual run from 2026-10-09 in the public
-dataset. It is not a real-time capture.
+**Screenshot:** genuine capture of the running app using the **live railradar provider** for train
+12626 (Kerala Express) at 2026-10-12 17:04 IST: provider-reported position "departed Kalamasseri",
+delay 47 min, tracking mode `real-time`. Rows marked *provider-predicted* are the provider's own
+estimates, not confirmed observations. Left: observed facts and evidence-labelled causes; right:
+learned forecast, simulated what-if and measured accuracy of each method.
 
 ## What is real, what is not
 
 | Item | Status |
 |---|---|
 | Historical data | **Real**: Hugging Face [`pjay-in/indian-railways-delays`](https://huggingface.co/datasets/pjay-in/indian-railways-delays) (cc-by-4.0). 370 daily files, 2025-02-08 .. 2026-10-11, 16.3 M section observations, 9 422 trains. An observed NTES-collected config (2026-10) plus a 2025-02..2026-02 config whose "actual" times are scheduled + reported delay. Station *names* are not in the data (codes only). |
-| Live status | **Not verified.** Adapters `railradar` (vendor docs; free sandbox reportedly 100 requests/month) and `rapidapi_irctc` exist but were never run against a live response (no key). NTES has no documented public API or data terms, so it is not scraped. |
+| Live status | **Verified once** (2026-10-12) with the `railradar` adapter against real responses for trains 12301 and 12626 (key kept only in the git-ignored `.env`). Free sandbox reportedly 100 requests/month; local budget caps and a 120 s cache apply. The `rapidapi_irctc` adapter remains unverified. NTES has no documented public API or data terms, so it is not scraped. |
 | Replay | `source=replay` re-plays the latest recorded run of a train, truncated at a stop ("now"). Labelled `HISTORICAL_REPLAY (not live)`. The recorded future is shown only afterwards, for evaluation. |
 | Nearby trains | From historical timetables of the same stations (weekday matched). Whether they run today and where they are right now is **not known**; their initial delays are sampled from history. |
 | Track layout | **Assumed** (double line, loop capacity 3, 2-min headway; single line optional). Not in any data. |
@@ -57,8 +58,9 @@ reset, speed.
 Create an account and key with your chosen provider, then in `.env` (copy `.env.example`):
 `RAILMIND_PROVIDER=railradar`, `RAILMIND_PROVIDER_API_KEY=...`. Budgets:
 `RAILMIND_MAX_CALLS_PER_MINUTE`, `RAILMIND_MAX_CALLS_PER_DAY`, `RAILMIND_MIN_REFRESH_SECONDS`
-(responses are cached). Compare `status.raw` with the vendor docs and adjust
-`RailRadarProvider.parse` if per-stop field names differ (unverified). `.env` is git-ignored.
+(responses are cached). Verified response fields: `trainName`, `delayMinutes`, `currentLocation`,
+`route[]` (`scheduledArrival`, `actualArrival`, `delayArrival`, `status`, `provenance`), `trackingMode`.
+`.env` is git-ignored; never commit the key.
 
 ### API
 `GET /api/health` - `GET /api/trains/<no>/status` - `GET /api/replay/trains` -
@@ -97,10 +99,18 @@ harmed 42 train-instances (more than 1 min). Differences are well inside noise: 
 improvement**. PPO requests blocked as unsafe: 4 336 (none executed). Not validated against real
 operations.
 
+## Live example (2026-10-12 17:04 IST, train 12626)
+Provider: 47 min late, departed Kalamasseri. Observed history: delay already 112 min at Mathura, peaked
+at 143 min (Nagpur..Chandrapur section +32 and +30, p90 and p80 of history), then recovered. Learned
+forecast median +46..+50 min for the next 7 halts (some stops use pooled or global fall-back evidence,
+shown in the table). Simulated alternatives: no decision differs from FCFS (no conflicts found).
+The observed halts at Gudur (+20) and Katpadi (+13) are reported facts; their cause is not in the data.
+
 ## Limitations
-- Live path unverified; the forecast model needs the downloaded data.
+- Live adapter checked on two trains only; some forecast stops fall back to pooled statistics.
 - In the "derived" config delay is one number per stop; dwell/run split is inferred.
 - No weather, maintenance, signalling or rake-link data; causes beyond observed deltas are hypotheses.
+- Simulation spread is large for late trains (Monte-Carlo std ~64 min in the live example).
 - Corridor at most 6 stops / about 5 h; train class inferred from category; no freight in the data.
 - Sources and provider research: [docs/SOURCES.md](docs/SOURCES.md).
 

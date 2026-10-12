@@ -25,6 +25,7 @@ class ProviderUnavailable(Exception):
 class StationStop:
     seq: Optional[int] = None
     passed: Optional[bool] = None
+    provenance: Optional[str] = None      # provider flag, e.g. "predicted" (estimate, not confirmed)
     name: Optional[str] = None
     code: Optional[str] = None
     sched_arr: Optional[str] = None
@@ -207,7 +208,7 @@ class RailRadarProvider(BaseProvider):
     could read, so they are parsed defensively and `raw` is always kept.
     """
     name = "railradar"
-    verified = False
+    verified = True      # parsed against one real response (train 12301, 2026-10-12); see docs
 
     def __init__(self, cfg=Config, session=None):
         self.cfg = cfg
@@ -273,8 +274,14 @@ class RailRadarProvider(BaseProvider):
                 sched_dep=_first(r_, "scheduledDeparture", "scheduledDepartureTime", "std"),
                 actual_dep=_first(r_, "actualDeparture", "actualDepartureTime", "etd"),
                 delay_min=_int(_first(r_, "delayArrival", "delayDeparture")),
-                passed=None))
+                passed=(r_.get("status") in ("departed", "at-station", "arrived")) if r_.get("status") else None,
+                provenance=r_.get("provenance")))
+        info = d.get("train") or {}
         st.stops_meta = {"is_live": d.get("isLive"), "status": d.get("status"),
+                         "tracking_mode": d.get("trackingMode"),
+                         "location_status": loc.get("status"),
+                         "current_station_name": loc.get("stationName"),
+                         "category": info.get("category"), "type": info.get("type"),
                          "segment_progress": loc.get("segmentProgress"),
                          "is_actual_position": loc.get("isActualPosition")}
         for k in ("train_name", "current_station", "delay_min"):
